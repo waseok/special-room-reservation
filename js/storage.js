@@ -3,6 +3,26 @@
  */
 
 /**
+ * 삭제/이름변경 불가한 "고정 특별실" 목록
+ * - name은 UI에 표시되는 고정명
+ * - id는 항상 동일한 canonical id (중복/병합의 기준)
+ *
+ * IMPORTANT:
+ * - 서버(시트)에 과거에 같은 이름이 다른 id로 저장돼 있어도
+ *   프론트에서 이 canonical id로 통합하여 "특별실이 막 늘어나는" 문제를 막습니다.
+ */
+const FIXED_ROOMS = [
+    { id: 'room-fixed-music', name: '음악실' },
+    { id: 'room-fixed-library', name: '도서실' },
+    { id: 'room-fixed-4f-meeting', name: '4층 회의실' },
+    { id: 'room-fixed-1f-av', name: '1층 시청각실' }
+];
+
+function normalizeRoomName_(name) {
+    return String(name || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/**
  * 충돌 가능성이 낮은 ID를 생성합니다.
  * - 가능하면 `crypto.randomUUID()` 사용
  * - 지원하지 않으면 시간 + 난수 조합
@@ -24,6 +44,117 @@ const Storage = {
     KEYS: {
         ROOMS: 'specialRooms',
         RESERVATIONS: 'specialReservations'
+    },
+
+    FIXED_ROOMS,
+
+    isFixedRoomId(roomId) {
+        const id = String(roomId || '').trim();
+        return this.FIXED_ROOMS.some(r => r.id === id);
+    },
+
+    isFixedRoomName(name) {
+        const nn = normalizeRoomName_(name);
+        return this.FIXED_ROOMS.some(r => normalizeRoomName_(r.name) === nn);
+    },
+
+    /**
+     * 고정 특별실을 강제로 1개씩만 유지하고, 기존 예약(roomId)도 canonical id로 마이그레이션합니다.
+     * - 같은 이름의 방이 여러 개 있거나(서버 불러오기 시) id가 달라도 -> 하나로 합칩니다.
+     * - 합쳐지는 방의 id는 reservation.roomId에서 canonical id로 바뀝니다.
+     *
+     * @returns {{changed:boolean, idMap:Object<string,string>}}
+     */
+    ensureFixedRooms() {
+        const rooms = this.getRooms();
+        const reservations = this.getReservations();
+
+        const idMap = {}; // oldId -> canonicalId
+        let changed = false;
+
+        // room 정리(고정방 우선)
+        const kept = [];
+        const removedIds = new Set();
+
+        for (const fixed of this.FIXED_ROOMS) {
+            const fixedNameNorm = normalizeRoomName_(fixed.name);
+            const candidates = rooms.filter(r => r && (String(r.id || '').trim() === fixed.id || normalizeRoomName_(r.name) === fixedNameNorm));
+
+            if (candidates.length === 0) {
+                kept.push({ id: fixed.id, name: fixed.name });
+                changed = true;
+                continue;
+            }
+
+            // canonical로 남길 room 선택: id가 canonical인 것을 최우선, 아니면 첫 번째
+            const canonical = candidates.find(r => String(r.id || '').trim() === fixed.id) || candidates[0];
+            const canonicalOldId = String(canonical.id || '').trim();
+
+            // canonical의 id/name을 고정값으로 강제
+            if (canonicalOldId !== fixed.id) {
+                idMap[canonicalOldId] = fixed.id;
+                canonical.id = fixed.id;
+                changed = true;
+            }
+            if (String(canonical.name || '').trim() !== fixed.name) {
+                canonical.name = fixed.name;
+                changed = true;
+            }
+
+            kept.push(canonical);
+
+            // 나머지 후보는 제거 + id 매핑
+            for (const c of candidates) {
+                const cid = String(c?.id || '').trim();
+                if (!cid) continue;
+                if (cid === fixed.id) continue;
+                idMap[cid] = fixed.id;
+                removedIds.add(cid);
+            }
+        }
+
+        // 고정방이 아닌 나머지 방들은 그대로 유지하되, 고정방 이름과 충돌하면 제거(고정방이 우선)
+        for (const r of rooms) {
+            if (!r) continue;
+            const rid = String(r.id || '').trim();
+            const rnameNorm = normalizeRoomName_(r.name);
+            if (!rid) continue;
+            if (removedIds.has(rid)) {
+                changed = true;
+                continue;
+            }
+            if (this.isFixedRoomId(rid)) {
+                // 이미 kept에 들어있음(중복 방지)
+                continue;
+            }
+            if (this.isFixedRoomName(r.name)) {
+                // 같은 이름인데 고정 id가 아닌 방 -> 제거 + 매핑(예약도 이동)
+                const canonical = this.FIXED_ROOMS.find(f => normalizeRoomName_(f.name) === rnameNorm);
+                if (canonical) {
+                    idMap[rid] = canonical.id;
+                    changed = true;
+                    continue;
+                }
+            }
+            kept.push(r);
+        }
+
+        // 예약 roomId 마이그레이션
+        let resChanged = false;
+        for (const res of reservations) {
+            if (!res) continue;
+            const cur = String(res.roomId || '').trim();
+            const mapped = idMap[cur];
+            if (mapped && mapped !== cur) {
+                res.roomId = mapped;
+                resChanged = true;
+            }
+        }
+
+        if (changed) this.saveRooms(kept);
+        if (resChanged) this.saveReservations(reservations);
+
+        return { changed: changed || resChanged, idMap };
     },
 
     /**
@@ -51,6 +182,13 @@ const Storage = {
      */
     addRoom(name) {
         const rooms = this.getRooms();
+        // 고정 특별실 이름은 새로 추가하지 않고, 고정방을 보장하는 흐름으로 유도
+        if (this.isFixedRoomName(name)) {
+            this.ensureFixedRooms();
+            // 고정방 반환
+            const fixed = this.getRooms().find(r => normalizeRoomName_(r.name) === normalizeRoomName_(name));
+            return fixed || null;
+        }
         const newRoom = {
             id: generateId('room'),
             name: name
@@ -66,6 +204,8 @@ const Storage = {
      * @param {string} newName - 새로운 이름
      */
     updateRoom(roomId, newName) {
+        // 고정방은 이름 변경 금지
+        if (this.isFixedRoomId(roomId)) return null;
         const rooms = this.getRooms();
         const index = rooms.findIndex(room => room.id === roomId);
         if (index !== -1) {
@@ -81,6 +221,8 @@ const Storage = {
      * @param {string} roomId - 특별실 ID
      */
     deleteRoom(roomId) {
+        // 고정방은 삭제 금지
+        if (this.isFixedRoomId(roomId)) return;
         const rooms = this.getRooms();
         const rid = String(roomId || '').trim();
         const filtered = rooms.filter(room => String(room?.id || '').trim() !== rid);

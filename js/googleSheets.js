@@ -198,6 +198,11 @@ const GoogleSheets = {
             if (data.rooms) Storage.saveRooms(data.rooms);
             if (data.reservations) Storage.saveReservations(data.reservations);
 
+            // 불러오기 후: 고정방 강제 + 중복 정리 + 예약 roomId 마이그레이션
+            Storage.ensureFixedRooms?.();
+            Storage.ensureUniqueRoomIds?.();
+            Storage.ensureUniqueReservationIds?.();
+
             alert('서버(구글 시트)에서 데이터를 불러왔습니다. 페이지를 새로고침합니다.');
             location.reload();
         } catch (error) {

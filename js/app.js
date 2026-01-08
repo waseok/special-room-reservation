@@ -118,6 +118,11 @@ function init() {
     Storage.ensureUniqueReservationIds();
     loadRooms();
     loadReservations();
+
+    // 고정 특별실(음악실/도서실/4층 회의실/1층 시청각실) 보장 + 중복 정리 + 예약 roomId 마이그레이션
+    Storage.ensureFixedRooms?.();
+    loadRooms();
+    loadReservations();
     setupEventListeners();
     renderRoomTabs();
     updateWeekSelector();
@@ -153,6 +158,31 @@ function init() {
             const remoteRooms = Array.isArray(rooms) ? rooms : [];
             const remoteRes = Array.isArray(reservations) ? reservations : [];
 
+            // 고정방 이름 기반으로 "원격 roomId -> canonical roomId" 매핑 생성
+            // (원격에 같은 이름의 방이 다른 id로 존재하면 예약이 다른 방으로 보이거나 중복/유실이 발생할 수 있음)
+            const fixedIdMap = {};
+            if (Storage?.FIXED_ROOMS?.length) {
+                const norm = (s) => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
+                for (const f of Storage.FIXED_ROOMS) {
+                    fixedIdMap[f.id] = f.id;
+                    const nn = norm(f.name);
+                    for (const rr of remoteRooms) {
+                        if (!rr) continue;
+                        if (norm(rr.name) === nn) {
+                            const rid = String(rr.id || '').trim();
+                            if (rid) fixedIdMap[rid] = f.id;
+                        }
+                    }
+                    for (const lr of localRooms) {
+                        if (!lr) continue;
+                        if (norm(lr.name) === nn) {
+                            const rid = String(lr.id || '').trim();
+                            if (rid) fixedIdMap[rid] = f.id;
+                        }
+                    }
+                }
+            }
+
             const roomMap = new Map();
             for (const r of localRooms) {
                 if (!r) continue;
@@ -176,6 +206,8 @@ function init() {
 
                 out.id = String(out.id || '').trim();
                 out.roomId = String(out.roomId || '').trim();
+                // 고정방 roomId는 canonical로 통합(merge 이전에 적용해야 중복 생성이 안 됨)
+                if (fixedIdMap[out.roomId]) out.roomId = fixedIdMap[out.roomId];
                 out.date = Storage?._normalizeDateISO ? Storage._normalizeDateISO(out.date) : String(out.date || '').trim();
                 const p = Number(out.period);
                 out.period = Number.isFinite(p) ? p : out.period;
@@ -262,6 +294,8 @@ function init() {
 
             Storage.saveRooms(Array.from(roomMap.values()));
             Storage.saveReservations(Array.from(resMap.values()));
+            // 최종적으로 고정방 강제 + 이름 중복 방 정리 + 예약 roomId 마이그레이션
+            Storage.ensureFixedRooms?.();
             loadRooms();
             loadReservations();
             Storage.ensureUniqueRoomIds();
@@ -288,16 +322,11 @@ function init() {
  * 기본 특별실 생성
  */
 function createDefaultRooms() {
-    // 요청: 음악실, 시청각실, 4층 협의회실 기본 생성
-    const defaultRooms = ['음악실', '시청각실', '4층 협의회실'];
-    defaultRooms.forEach(name => {
-        Storage.addRoom(name);
-    });
+    // 요청: 고정 특별실을 기본으로 생성/보장
+    Storage.ensureFixedRooms?.();
     loadRooms();
     renderRoomTabs();
-    if (AppState.rooms.length > 0) {
-        selectRoom(AppState.rooms[0].id);
-    }
+    if (AppState.rooms.length > 0) selectRoom(AppState.rooms[0].id);
 }
 
 /**
@@ -398,6 +427,10 @@ function setupEventListeners() {
  * 특별실 삭제 요청 (비밀번호 확인)
  */
 function requestDeleteRoom(room) {
+    if (Storage?.isFixedRoomId?.(room?.id)) {
+        alert('이 특별실은 고정 특별실이라 삭제할 수 없습니다.');
+        return;
+    }
     const password = prompt(`${room.name}을(를) 삭제하려면 비밀번호(4자리)를 입력하세요:`);
     if (password === COMMON_PASSWORD) {
         if (confirm(`${room.name}을(를) 삭제하시겠습니까? 모든 예약도 함께 삭제됩니다.`)) {
@@ -470,24 +503,34 @@ function showRoomContextMenu(e, room) {
     menu.className = 'fixed bg-white border rounded shadow-lg z-50';
     menu.style.left = e.pageX + 'px';
     menu.style.top = e.pageY + 'px';
+
+    const isFixed = Storage?.isFixedRoomId?.(room?.id);
     menu.innerHTML = `
-        <button class="block w-full text-left px-4 py-2 hover:bg-gray-100 edit-room-menu" data-room-id="${room.id}">
-            이름 수정
+        <button class="block w-full text-left px-4 py-2 ${isFixed ? 'text-gray-400 cursor-not-allowed' : 'hover:bg-gray-100'} edit-room-menu" data-room-id="${room.id}">
+            이름 수정${isFixed ? ' (고정)' : ''}
         </button>
-        <button class="block w-full text-left px-4 py-2 hover:bg-gray-100 text-red-600 delete-room-menu" data-room-id="${room.id}">
-            삭제
+        <button class="block w-full text-left px-4 py-2 ${isFixed ? 'text-gray-400 cursor-not-allowed' : 'hover:bg-gray-100 text-red-600'} delete-room-menu" data-room-id="${room.id}">
+            삭제${isFixed ? ' (고정)' : ''}
         </button>
     `;
     
     document.body.appendChild(menu);
     
     menu.querySelector('.edit-room-menu').addEventListener('click', () => {
-        showEditRoomModal(room);
+        if (isFixed) {
+            alert('이 특별실은 고정 특별실이라 이름을 수정할 수 없습니다.');
+        } else {
+            showEditRoomModal(room);
+        }
         document.body.removeChild(menu);
     });
     
     menu.querySelector('.delete-room-menu').addEventListener('click', () => {
-        requestDeleteRoom(room);
+        if (isFixed) {
+            alert('이 특별실은 고정 특별실이라 삭제할 수 없습니다.');
+        } else {
+            requestDeleteRoom(room);
+        }
         document.body.removeChild(menu);
     });
     
@@ -521,6 +564,10 @@ function selectRoom(roomId) {
  * 특별실 삭제
  */
 function deleteRoom(roomId) {
+    if (Storage?.isFixedRoomId?.(roomId)) {
+        alert('이 특별실은 고정 특별실이라 삭제할 수 없습니다.');
+        return;
+    }
     Storage.deleteRoom(roomId);
     loadRooms();
     loadReservations();
@@ -817,6 +864,10 @@ function handleAddRoomSubmit(e) {
  * 특별실 수정 모달 표시
  */
 function showEditRoomModal(room) {
+    if (Storage?.isFixedRoomId?.(room?.id)) {
+        alert('이 특별실은 고정 특별실이라 이름을 수정할 수 없습니다.');
+        return;
+    }
     elements.editRoomId.value = room.id;
     elements.editRoomName.value = room.name;
     elements.editRoomModal.classList.add('show');
