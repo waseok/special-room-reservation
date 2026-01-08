@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>특별실 예약 관리</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="bg-gray-50">
+    <div class="container mx-auto px-4 py-6">
+        <!-- 상단 컨트롤 바 -->
+        <div class="bg-white rounded-lg shadow-md p-4 mb-4">
+            <div class="flex items-center justify-between flex-wrap gap-4">
+                <!-- 날짜 네비게이션 -->
+                <div class="flex items-center gap-2">
+                    <button id="prevWeek" class="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded text-xl font-extrabold leading-none">
+                        ←
+                    </button>
+                    <select id="weekSelector" class="px-3 py-1 border rounded">
+                        <!-- 동적으로 생성 -->
+                    </select>
+                    <button id="nextWeek" class="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded text-xl font-extrabold leading-none">
+                        →
+                    </button>
+                    <button id="goToday" class="px-3 py-2 bg-gray-900 text-white rounded hover:bg-gray-800 text-sm font-semibold">
+                        오늘로
+                    </button>
+                </div>
+
+
+                <!-- 기능 버튼 -->
+                <div class="flex items-center gap-2">
+                    <button id="viewMyReservations" class="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm">
+                        내예약보기
+                    </button>
+                    <button id="googleSheetsConfigBtn" class="px-3 py-1 bg-purple-500 text-white rounded hover:bg-purple-600 text-sm">
+                        구글시트 설정
+                    </button>
+                    <button id="syncToSheetsBtn" class="px-3 py-1 bg-orange-500 text-white rounded hover:bg-orange-600 text-sm">
+                        서버로 저장
+                    </button>
+                    <button id="syncFromSheetsBtn" class="px-3 py-1 bg-teal-600 text-white rounded hover:bg-teal-700 text-sm">
+                        서버에서 불러오기
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 특별실 탭 영역 -->
+        <div class="bg-white rounded-lg shadow-md p-4 mb-4">
+            <div class="flex items-center gap-2 flex-wrap">
+                <div id="roomTabs" class="flex gap-2 flex-wrap">
+                    <!-- 동적으로 생성 -->
+                </div>
+                <button id="addRoomBtn" class="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600">
+                    + 특별실 추가
+                </button>
+            </div>
+        </div>
+
+        <!-- 시간표 격자 -->
+        <div class="bg-white rounded-lg shadow-md p-4 overflow-x-auto">
+            <div id="scheduleTitle" class="text-lg font-semibold text-gray-800 mb-3">
+                특별실을 선택하세요
+            </div>
+            <table id="scheduleTable" class="w-full border-collapse">
+                <thead>
+                    <tr>
+                        <th class="border p-2 bg-gray-100 w-16">교시</th>
+                        <th id="monday" class="border p-2 bg-gray-100">월</th>
+                        <th id="tuesday" class="border p-2 bg-gray-100">화</th>
+                        <th id="wednesday" class="border p-2 bg-gray-100">수</th>
+                        <th id="thursday" class="border p-2 bg-gray-100">목</th>
+                        <th id="friday" class="border p-2 bg-gray-100">금</th>
+                    </tr>
+                </thead>
+                <tbody id="scheduleBody">
+                    <!-- 동적으로 생성 (1~10교시) -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- 예약 모달 -->
+    <div id="reservationModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 w-full max-w-md mx-4">
+            <h2 id="modalTitle" class="text-xl font-bold mb-4">예약하기</h2>
+            <form id="reservationForm">
+                <input type="hidden" id="reservationId">
+                <input type="hidden" id="reservationDate">
+                <input type="hidden" id="reservationPeriod">
+                <input type="hidden" id="reservationRoomId">
+
+                <div class="mb-4">
+                    <label class="block text-sm font-medium mb-1">예약자명</label>
+                    <input type="text" id="reservationName" class="w-full px-3 py-2 border rounded" required>
+                </div>
+
+                <div class="mb-4">
+                    <label class="block text-sm font-medium mb-1">학급</label>
+                    <input type="text" id="reservationClass" class="w-full px-3 py-2 border rounded" placeholder="예: 6-1">
+                </div>
+
+                <div class="mb-4">
+                    <label class="block text-sm font-medium mb-1">목적</label>
+                    <input type="text" id="reservationPurpose" class="w-full px-3 py-2 border rounded" placeholder="예: 실험 수업">
+                </div>
+
+                <div class="flex gap-2 justify-end">
+                    <button type="button" id="deleteReservationBtn" class="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 hidden">
+                        삭제
+                    </button>
+                    <button type="button" id="cancelModalBtn" class="px-4 py-2 bg-gray-300 rounded hover:bg-gray-400">
+                        취소
+                    </button>
+                    <button type="submit" class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">
+                        저장
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- 특별실 추가 모달 -->
+    <div id="addRoomModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 w-full max-w-md mx-4">
+            <h2 class="text-xl font-bold mb-4">특별실 추가</h2>
+            <form id="addRoomForm">
+                <div class="mb-4">
+                    <label class="block text-sm font-medium mb-1">특별실 이름</label>
+                    <input type="text" id="roomName" class="w-full px-3 py-2 border rounded" placeholder="예: 과학실" required>
+                </div>
+                <div class="flex gap-2 justify-end">
+                    <button type="button" id="cancelRoomModalBtn" class="px-4 py-2 bg-gray-300 rounded hover:bg-gray-400">
+                        취소
+                    </button>
+                    <button type="submit" class="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600">
+                        추가
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- 특별실 수정 모달 -->
+    <div id="editRoomModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 w-full max-w-md mx-4">
+            <h2 class="text-xl font-bold mb-4">특별실 이름 수정</h2>
+            <form id="editRoomForm">
+                <input type="hidden" id="editRoomId">
+                <div class="mb-4">
+                    <label class="block text-sm font-medium mb-1">특별실 이름</label>
+                    <input type="text" id="editRoomName" class="w-full px-3 py-2 border rounded" required>
+                </div>
+                <div class="flex gap-2 justify-end">
+                    <button type="button" id="cancelEditRoomModalBtn" class="px-4 py-2 bg-gray-300 rounded hover:bg-gray-400">
+                        취소
+                    </button>
+                    <button type="submit" class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">
+                        수정
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- 스크립트 로드 -->
+    <script src="js/utils.js"></script>
+    <script src="js/storage.js"></script>
+    <script src="js/googleSheets.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
+
