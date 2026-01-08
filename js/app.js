@@ -137,8 +137,16 @@ function init() {
     // 서버 자동 동기화: 원격 데이터 적용 핸들러 등록 + 시작
     if (typeof GoogleSheets !== 'undefined') {
         GoogleSheets.setApplyRemote(async ({ rooms, reservations }) => {
-            // 서버 데이터 적용: 덮어쓰기 대신 \"병합\"해서 서버가 일시적으로 비어도 로컬이 사라지지 않게 보호
-            // (단순 정책: id 기준 union, 서버 데이터가 있으면 우선)
+            // 서버 데이터 적용: \"그냥 덮어쓰기\"는 위험합니다.
+            // - Sheets/Apps Script 특성상 date/period 타입이 흔들리거나
+            // - 헤더/빈값 때문에 원격 객체가 불완전하게 내려오면
+            // 로컬 정상 데이터가 \"사라진 것처럼\" 보일 수 있습니다.
+            //
+            // 정책:
+            // - id 기준으로 병합하되,
+            // - 같은 id 충돌 시 \"더 완전한 데이터\"를 우선하고,
+            // - 서로 다른 슬롯(roomId/date/period)인데 id가 같다면 새 id를 부여해 데이터 유실을 막습니다.
+
             const localRooms = Storage.getRooms();
             const localRes = Storage.getReservations();
 
@@ -146,12 +154,111 @@ function init() {
             const remoteRes = Array.isArray(reservations) ? reservations : [];
 
             const roomMap = new Map();
-            for (const r of localRooms) roomMap.set(r.id, r);
-            for (const r of remoteRooms) roomMap.set(r.id, r);
+            for (const r of localRooms) {
+                if (!r) continue;
+                const id = String(r.id || '').trim();
+                if (!id) continue;
+                roomMap.set(id, r);
+            }
+            for (const r of remoteRooms) {
+                if (!r) continue;
+                const id = String(r.id || '').trim();
+                if (!id) continue;
+                // 방은 필드가 단순해서 원격 우선으로 덮어도 위험이 낮습니다.
+                roomMap.set(id, r);
+            }
+
+            const normalizeResForMerge = (x) => {
+                if (!x) return null;
+                const out = { ...x };
+                if (!out.roomId && out.roomID) out.roomId = out.roomID; // 호환
+                if (!out.createdAt && out.createAt) out.createdAt = out.createAt; // 호환
+
+                out.id = String(out.id || '').trim();
+                out.roomId = String(out.roomId || '').trim();
+                out.date = Storage?._normalizeDateISO ? Storage._normalizeDateISO(out.date) : String(out.date || '').trim();
+                const p = Number(out.period);
+                out.period = Number.isFinite(p) ? p : out.period;
+                return out;
+            };
+
+            const quality = (r) => {
+                if (!r) return 0;
+                let q = 0;
+                if (r.roomId) q++;
+                if (r.date) q++;
+                if (Number.isFinite(Number(r.period))) q++;
+                if (r.name != null && String(r.name).trim()) q++;
+                return q;
+            };
+
+            const getTs = (r) => {
+                if (!r) return '';
+                // 다양한 표기 흔들림에 대응 (서버/시트 헤더에 따라 키가 달라질 수 있음)
+                const v =
+                    r.updatedAt ?? r.updatedat ??
+                    r.createdAt ?? r.createdat ??
+                    r.createAt ?? r.createat ?? '';
+                const s = String(v || '').trim();
+                // ISO datetime은 앞 19자 정도면 비교 가능하지만, 여기선 문자열 비교(서버도 동일 방식)로 충분
+                return s;
+            };
+
+            const sameSlot = (a, b) => {
+                if (!a || !b) return false;
+                return (
+                    String(a.roomId || '').trim() === String(b.roomId || '').trim() &&
+                    String(a.date || '').trim() === String(b.date || '').trim() &&
+                    Number(a.period) === Number(b.period)
+                );
+            };
 
             const resMap = new Map();
-            for (const r of localRes) resMap.set(r.id, r);
-            for (const r of remoteRes) resMap.set(r.id, r);
+            const addRes = (raw, prefer = 'local') => {
+                const r = normalizeResForMerge(raw);
+                if (!r) return;
+
+                let id = r.id || '';
+                if (!id) id = generateId('reservation');
+
+                const existing = resMap.get(id);
+                if (!existing) {
+                    r.id = id;
+                    resMap.set(id, r);
+                    return;
+                }
+
+                // 같은 슬롯이면 품질/타임스탬프로 더 나은 쪽 선택
+                if (sameSlot(existing, r)) {
+                    const qe = quality(existing);
+                    const qr = quality(r);
+                    const te = getTs(existing);
+                    const tr = getTs(r);
+
+                    // 원격이 더 완전하거나 최신이면 교체, 아니면 유지
+                    if (qr > qe || (qr === qe && tr && (!te || tr >= te))) {
+                        r.id = id;
+                        resMap.set(id, r);
+                    } else if (prefer === 'remote' && qr === qe && !tr && !te) {
+                        // 타임스탬프가 둘 다 없으면, 동률일 때만 remote 우선 옵션
+                        r.id = id;
+                        resMap.set(id, r);
+                    }
+                    return;
+                }
+
+                // 서로 다른 슬롯인데 id가 같으면 -> 데이터 유실 방지를 위해 새 id 부여
+                let newId = id;
+                while (resMap.has(newId)) {
+                    newId = generateId('reservation');
+                }
+                r.id = newId;
+                resMap.set(newId, r);
+            };
+
+            // 로컬 먼저 반영 후, 원격을 \"안전하게\" 덧씌움
+            for (const r of localRes) addRes(r, 'local');
+            for (const r of remoteRes) addRes(r, 'remote');
 
             Storage.saveRooms(Array.from(roomMap.values()));
             Storage.saveReservations(Array.from(resMap.values()));
@@ -181,7 +288,8 @@ function init() {
  * 기본 특별실 생성
  */
 function createDefaultRooms() {
-    const defaultRooms = ['시청각실', '4층 회의실', '음악실'];
+    // 요청: 음악실, 시청각실, 4층 협의회실 기본 생성
+    const defaultRooms = ['음악실', '시청각실', '4층 협의회실'];
     defaultRooms.forEach(name => {
         Storage.addRoom(name);
     });

@@ -19,7 +19,10 @@ const GoogleSheets = {
     config: {
         webAppUrl: '', // Apps Script 웹앱 배포 URL
         enabled: false, // API 연동 활성화 여부
-        autoSync: true, // 자동 저장/불러오기
+        // 자동 동기화 옵션을 분리(저장/불러오기 개별 on/off)
+        // - 과거 설정(autoSync)을 사용하던 사용자를 위해 loadConfig에서 호환 처리합니다.
+        autoSave: true, // 입력 시 자동 저장(push)
+        autoPull: true, // 주기적 자동 불러오기(pull)
         pollSeconds: 20 // 자동 불러오기 주기(초)
     },
 
@@ -29,7 +32,13 @@ const GoogleSheets = {
     loadConfig() {
         const saved = localStorage.getItem('googleSheetsConfig');
         if (saved) {
-            this.config = { ...this.config, ...JSON.parse(saved) };
+            const parsed = JSON.parse(saved) || {};
+            // backward compatibility: autoSync -> autoSave/autoPull
+            if (typeof parsed.autoSync === 'boolean') {
+                if (typeof parsed.autoSave !== 'boolean') parsed.autoSave = parsed.autoSync;
+                if (typeof parsed.autoPull !== 'boolean') parsed.autoPull = parsed.autoSync;
+            }
+            this.config = { ...this.config, ...parsed };
         }
     },
 
@@ -66,11 +75,18 @@ const GoogleSheets = {
                         </label>
                     </div>
                     <div class="mb-4">
-                        <label class="flex items-center">
-                            <input type="checkbox" id="gsAutoSync" ${this.config.autoSync ? 'checked' : ''} 
-                                   class="mr-2">
-                            <span>자동 동기화(입력 시 자동 저장 + 주기적 자동 불러오기)</span>
-                        </label>
+                        <div class="space-y-2">
+                            <label class="flex items-center">
+                                <input type="checkbox" id="gsAutoSave" ${this.config.autoSave ? 'checked' : ''} 
+                                       class="mr-2">
+                                <span>자동 저장(입력 시 서버로 저장)</span>
+                            </label>
+                            <label class="flex items-center">
+                                <input type="checkbox" id="gsAutoPull" ${this.config.autoPull ? 'checked' : ''} 
+                                       class="mr-2">
+                                <span>자동 불러오기(주기적으로 서버에서 가져오기)</span>
+                            </label>
+                        </div>
                         <div class="mt-2 flex items-center gap-2">
                             <span class="text-xs text-gray-600">자동 불러오기 주기</span>
                             <select id="gsPollSeconds" class="px-2 py-1 border rounded text-xs">
@@ -103,7 +119,8 @@ const GoogleSheets = {
             e.preventDefault();
             this.config.webAppUrl = modal.querySelector('#gsWebAppUrl').value.trim();
             this.config.enabled = modal.querySelector('#gsEnabled').checked;
-            this.config.autoSync = modal.querySelector('#gsAutoSync').checked;
+            this.config.autoSave = modal.querySelector('#gsAutoSave').checked;
+            this.config.autoPull = modal.querySelector('#gsAutoPull').checked;
             this.config.pollSeconds = Number(modal.querySelector('#gsPollSeconds').value || 20);
             this.saveConfig();
             document.body.removeChild(modal);
@@ -294,7 +311,7 @@ const GoogleSheets = {
     },
 
     startAutoSync() {
-        if (!this.isReady() || !this.config.autoSync) return;
+        if (!this.isReady() || !this.config.autoPull) return;
 
         const pollMs = Math.max(5, Number(this.config.pollSeconds) || 20) * 1000;
 
@@ -324,8 +341,16 @@ const GoogleSheets = {
 
     async pullIfChanged() {
         if (!this.isReady() || !this._applyRemote) return;
+        // 저장(flush) 중에는 pull로 화면이 흔들리거나 \"사라짐\"처럼 보일 수 있어 잠시 중단
+        if (this._isFlushing) return;
         const data = await this.exportAll(this.config.webAppUrl);
         if (!data || !data.ok) return;
+
+        // 방어: export 응답이 비정상(배열이 아닌 경우)일 때는 적용하지 않음
+        // (네트워크/서버 오류로 {}만 내려오면 local이 \"사라진 것처럼\" 보일 수 있음)
+        if (data.rooms != null && !Array.isArray(data.rooms)) return;
+        if (data.reservations != null && !Array.isArray(data.reservations)) return;
+
         const serverV = data?.meta?.version || '';
         const lastV = this._getLastVersion();
         if (serverV && serverV !== lastV) {
@@ -339,7 +364,7 @@ const GoogleSheets = {
     _saveQueue: [],
 
     queueSave(task) {
-        if (!this.isReady() || !this.config.autoSync) return;
+        if (!this.isReady() || !this.config.autoSave) return;
         this._saveQueue.push(task);
         if (this._saveTimer) clearTimeout(this._saveTimer);
         this._saveTimer = setTimeout(() => this.flushSaveQueue().catch(console.error), 600);
@@ -349,6 +374,7 @@ const GoogleSheets = {
         if (!this.isReady()) return;
         const tasks = this._saveQueue.splice(0, this._saveQueue.length);
         if (tasks.length === 0) return;
+        this._isFlushing = true;
 
         // 같은 종류/ID는 마지막 작업만 남김
         const map = new Map();
@@ -358,17 +384,21 @@ const GoogleSheets = {
         }
         const compact = Array.from(map.values());
 
-        for (const t of compact) {
-            if (t.type === 'upsertRoom') await this.upsertRoom(this.config.webAppUrl, t.data);
-            if (t.type === 'upsertReservation') await this.upsertReservation(this.config.webAppUrl, t.data);
-            if (t.type === 'deleteRoom') await this.deleteRoom(this.config.webAppUrl, t.id);
-            if (t.type === 'deleteReservation') await this.deleteReservation(this.config.webAppUrl, t.id);
-        }
+        try {
+            for (const t of compact) {
+                if (t.type === 'upsertRoom') await this.upsertRoom(this.config.webAppUrl, t.data);
+                if (t.type === 'upsertReservation') await this.upsertReservation(this.config.webAppUrl, t.data);
+                if (t.type === 'deleteRoom') await this.deleteRoom(this.config.webAppUrl, t.id);
+                if (t.type === 'deleteReservation') await this.deleteReservation(this.config.webAppUrl, t.id);
+            }
 
-        // 저장 후 서버 버전 갱신(다음 pull 비교에 사용)
-        const exported = await this.exportAll(this.config.webAppUrl);
-        const serverV = exported?.meta?.version || '';
-        this._setLastVersion(serverV);
+            // 저장 후 서버 버전 갱신(다음 pull 비교에 사용)
+            const exported = await this.exportAll(this.config.webAppUrl);
+            const serverV = exported?.meta?.version || '';
+            this._setLastVersion(serverV);
+        } finally {
+            this._isFlushing = false;
+        }
     }
 };
 

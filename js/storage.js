@@ -40,7 +40,8 @@ const Storage = {
      * @param {Array} rooms - 특별실 배열
      */
     saveRooms(rooms) {
-        localStorage.setItem(this.KEYS.ROOMS, JSON.stringify(rooms));
+        const normalized = Array.isArray(rooms) ? rooms.map(r => this._normalizeRoom(r)).filter(Boolean) : [];
+        localStorage.setItem(this.KEYS.ROOMS, JSON.stringify(normalized));
     },
 
     /**
@@ -81,12 +82,13 @@ const Storage = {
      */
     deleteRoom(roomId) {
         const rooms = this.getRooms();
-        const filtered = rooms.filter(room => room.id !== roomId);
+        const rid = String(roomId || '').trim();
+        const filtered = rooms.filter(room => String(room?.id || '').trim() !== rid);
         this.saveRooms(filtered);
         
         // 해당 특별실의 예약도 모두 삭제
         const reservations = this.getReservations();
-        const filteredReservations = reservations.filter(res => res.roomId !== roomId);
+        const filteredReservations = reservations.filter(res => String(res?.roomId || '').trim() !== rid);
         this.saveReservations(filteredReservations);
     },
 
@@ -104,7 +106,8 @@ const Storage = {
      * @param {Array} reservations - 예약 배열
      */
     saveReservations(reservations) {
-        localStorage.setItem(this.KEYS.RESERVATIONS, JSON.stringify(reservations));
+        const normalized = Array.isArray(reservations) ? reservations.map(r => this._normalizeReservation(r)).filter(Boolean) : [];
+        localStorage.setItem(this.KEYS.RESERVATIONS, JSON.stringify(normalized));
     },
 
     /**
@@ -137,15 +140,23 @@ const Storage = {
 
         for (const room of rooms) {
             if (!room) continue;
-            if (!room.id) {
+            const cur = String(room.id || '').trim();
+            if (!cur) {
                 room.id = generateId('room');
                 changed = true;
+                seen.add(String(room.id || '').trim());
+            } else {
+                // 타입/공백 정리 (number -> string 등)
+                if (room.id !== cur) {
+                    room.id = cur;
+                    changed = true;
+                }
+                if (seen.has(cur)) {
+                    room.id = generateId('room');
+                    changed = true;
+                }
+                seen.add(String(room.id || '').trim());
             }
-            if (seen.has(room.id)) {
-                room.id = generateId('room');
-                changed = true;
-            }
-            seen.add(room.id);
         }
 
         if (changed) {
@@ -167,15 +178,23 @@ const Storage = {
 
         for (const r of reservations) {
             if (!r) continue;
-            if (!r.id) {
+            const cur = String(r.id || '').trim();
+            if (!cur) {
                 r.id = generateId('reservation');
                 changed = true;
+                seen.add(String(r.id || '').trim());
+            } else {
+                // 타입/공백 정리 (number -> string 등)
+                if (r.id !== cur) {
+                    r.id = cur;
+                    changed = true;
+                }
+                if (seen.has(cur)) {
+                    r.id = generateId('reservation');
+                    changed = true;
+                }
+                seen.add(String(r.id || '').trim());
             }
-            if (seen.has(r.id)) {
-                r.id = generateId('reservation');
-                changed = true;
-            }
-            seen.add(r.id);
         }
 
         if (changed) {
@@ -192,7 +211,8 @@ const Storage = {
      */
     updateReservation(reservationId, updates) {
         const reservations = this.getReservations();
-        const index = reservations.findIndex(res => res.id === reservationId);
+        const rid = String(reservationId || '').trim();
+        const index = reservations.findIndex(res => String(res?.id || '').trim() === rid);
         if (index !== -1) {
             reservations[index] = { ...reservations[index], ...updates };
             this.saveReservations(reservations);
@@ -207,7 +227,8 @@ const Storage = {
      */
     deleteReservation(reservationId) {
         const reservations = this.getReservations();
-        const filtered = reservations.filter(res => res.id !== reservationId);
+        const rid = String(reservationId || '').trim();
+        const filtered = reservations.filter(res => String(res?.id || '').trim() !== rid);
         this.saveReservations(filtered);
     },
 
@@ -218,7 +239,8 @@ const Storage = {
      */
     getReservationsByRoom(roomId) {
         const reservations = this.getReservations();
-        return reservations.filter(res => res.roomId === roomId);
+        const rid = String(roomId || '').trim();
+        return reservations.filter(res => String(res?.roomId || '').trim() === rid);
     },
 
     /**
@@ -230,11 +252,17 @@ const Storage = {
      */
     getReservation(roomId, date, period) {
         const reservations = this.getReservations();
-        return reservations.find(res => 
-            res.roomId === roomId && 
-            res.date === date && 
-            res.period === period
-        ) || null;
+        const rid = String(roomId || '').trim();
+        const d = this._normalizeDateISO(date);
+        const p = Number(period);
+
+        return reservations.find(res => {
+            if (!res) return false;
+            const resRoomId = String(res.roomId || '').trim();
+            const resDate = this._normalizeDateISO(res.date);
+            const resPeriod = Number(res.period);
+            return resRoomId === rid && resDate === d && resPeriod === p;
+        }) || null;
     },
 
     /**
@@ -243,6 +271,114 @@ const Storage = {
     clearAll() {
         localStorage.removeItem(this.KEYS.ROOMS);
         localStorage.removeItem(this.KEYS.RESERVATIONS);
+    }
+
+    ,
+
+    /**
+     * ---- Normalization helpers ----
+     * Google Sheets / Apps Script에서 내려오는 값은
+     * - 숫자/문자 혼용(period: 1 vs "1")
+     * - 날짜 혼용(date: "YYYY-MM-DD" vs Date 객체 vs "YYYY-MM-DDTHH:mm:ssZ")
+     * - 키 이름 흔들림(roomId vs roomID, createdAt vs createAt)
+     * 등이 발생할 수 있어, 로컬에 저장하기 전에 표준 형태로 보정합니다.
+     */
+
+    _normalizeRoom(room) {
+        if (!room) return null;
+        const out = { ...room };
+        const id = String(out.id || '').trim() || generateId('room');
+        out.id = id;
+        if (out.name != null) out.name = String(out.name).trim();
+        return out;
+    },
+
+    _normalizeReservation(resv) {
+        if (!resv) return null;
+
+        // 원본 보존 + 표준 키로 보정
+        const out = { ...resv };
+
+        // id
+        out.id = String(out.id || '').trim() || generateId('reservation');
+
+        // roomId (roomID 호환)
+        if (!out.roomId && out.roomID) out.roomId = out.roomID;
+        out.roomId = String(out.roomId || '').trim();
+
+        // date (표준: YYYY-MM-DD)
+        out.date = this._normalizeDateISO(out.date);
+
+        // period (표준: number)
+        const p = Number(out.period);
+        out.period = Number.isFinite(p) ? p : out.period;
+
+        // 문자열 필드
+        if (out.name != null) out.name = String(out.name).trim();
+        if (out.class != null) out.class = String(out.class).trim();
+        if (out.purpose != null) out.purpose = String(out.purpose).trim();
+
+        // createdAt/createAt 호환(키만 맞춰두고 값은 그대로 둠)
+        if (!out.createdAt && out.createAt) out.createdAt = out.createAt;
+
+        return out;
+    },
+
+    /**
+     * date를 "YYYY-MM-DD"로 최대한 보정합니다.
+     * - Date 객체: formatDateISO 사용
+     * - ISO 문자열: 앞 10자리 사용(YYYY-MM-DD)
+     * - "YYYY.M.D" / "YYYY-MM-D" 등: 패딩해서 ISO로 변환
+     */
+    _normalizeDateISO(value) {
+        if (value == null) return '';
+
+        // Date 객체
+        if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime?.())) {
+            try {
+                return formatDateISO(value);
+            } catch (_) {
+                // fallthrough
+            }
+        }
+
+        const s = String(value).trim();
+        if (!s) return '';
+
+        // "2026-01-08T00:00:00.000Z" 같은 ISO는 그대로 slice하면(UTC 기준) 날짜가 하루 밀릴 수 있습니다.
+        // 반드시 Date로 파싱한 뒤, 로컬 타임존 기준으로 YYYY-MM-DD로 변환합니다.
+        if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
+            const d = new Date(s);
+            if (!isNaN(d.getTime())) {
+                return formatDateISO(d);
+            }
+            // 파싱 실패 시 최소한 앞 10자리 사용
+            return s.slice(0, 10);
+        }
+
+        // 이미 ISO
+        if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+
+        // 기타 Date 문자열(예: "Thu Jan 08 2026 00:00:00 GMT+0900 ...")도 파싱 시도
+        // (Sheets가 날짜를 Date로 저장했다가 문자열로 내려줄 때 발생 가능)
+        if (/[A-Za-z]{3}\s+[A-Za-z]{3}\s+\d{1,2}\s+\d{4}/.test(s) || /GMT[+-]\d{4}/.test(s)) {
+            const d = new Date(s);
+            if (!isNaN(d.getTime())) {
+                return formatDateISO(d);
+            }
+        }
+
+        // 점/슬래시 포함 포맷도 보정
+        const m = s.match(/^(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})$/);
+        if (m) {
+            const yyyy = m[1];
+            const mm = String(m[2]).padStart(2, '0');
+            const dd = String(m[3]).padStart(2, '0');
+            return `${yyyy}-${mm}-${dd}`;
+        }
+
+        // 마지막 fallback: 그대로(이 경우 getReservation에서 매칭이 어려울 수 있어, 가능한 표준화 권장)
+        return s;
     }
 };
 
