@@ -122,6 +122,23 @@ const GoogleSheets = {
                             </select>
                         </div>
                     </div>
+                    <div class="mb-4 border-t pt-3">
+                        <div class="text-xs text-gray-600 mb-2">
+                            관리자/복구 기능
+                        </div>
+                        <div class="flex gap-2 justify-end">
+                            <button type="button" id="gsRepairBtn" class="px-3 py-2 bg-red-600 text-white rounded hover:bg-red-700 text-sm">
+                                서버 데이터 정리
+                            </button>
+                            <button type="button" id="gsLocalResetBtn" class="px-3 py-2 bg-gray-200 rounded hover:bg-gray-300 text-sm">
+                                이 PC 데이터 초기화
+                            </button>
+                        </div>
+                        <div class="text-[11px] text-gray-500 mt-2 leading-relaxed">
+                            - 서버 데이터 정리: 시트의 빈/중복 id 행, 고정 특별실 중복 등을 정리합니다(주의: 일부 행 삭제 가능).<br>
+                            - 이 PC 데이터 초기화: 내 브라우저(LocalStorage)만 초기화합니다(서버 데이터는 유지).
+                        </div>
+                    </div>
                     <div class="flex gap-2 justify-end">
                         <button type="button" id="gsCancelBtn" class="px-4 py-2 bg-gray-300 rounded hover:bg-gray-400">
                             취소
@@ -142,6 +159,8 @@ const GoogleSheets = {
         const form = modal.querySelector('#googleSheetsConfigForm');
         const cancelBtn = modal.querySelector('#gsCancelBtn');
         const testBtn = modal.querySelector('#gsTestBtn');
+        const repairBtn = modal.querySelector('#gsRepairBtn');
+        const localResetBtn = modal.querySelector('#gsLocalResetBtn');
         
         form.addEventListener('submit', (e) => {
             e.preventDefault();
@@ -177,6 +196,53 @@ const GoogleSheets = {
             } catch (err) {
                 console.error(err);
                 alert('연결 실패: ' + (err?.message || err));
+            }
+        });
+
+        repairBtn.addEventListener('click', async () => {
+            const url = modal.querySelector('#gsWebAppUrl').value.trim();
+            if (!url) {
+                alert('Web App URL이 없습니다.');
+                return;
+            }
+            if (!confirm('정말로 서버(시트) 데이터를 정리하시겠습니까?\n- 중복/빈 id 행이 삭제될 수 있습니다.\n- 고정 특별실은 1개로 통합됩니다.')) {
+                return;
+            }
+            const pw = prompt('관리자 비밀번호(4자리)를 입력하세요:');
+            if (pw === null) return;
+            try {
+                const res = await this.repairServer(url, pw);
+                if (!res?.ok) {
+                    alert('정리 실패: ' + (res?.error || 'unknown'));
+                    return;
+                }
+                const s = res?.summary || {};
+                alert(
+                    '서버 정리 완료!\n' +
+                    `- Rooms: removedRows=${s?.rooms?.removedRows ?? 0}, mergedByName=${s?.rooms?.mergedByName ?? 0}\n` +
+                    `- Reservations: removedRows=${s?.reservations?.removedRows ?? 0}, remappedRoomId=${s?.reservations?.remappedRoomId ?? 0}`
+                );
+
+                // 정리 후 최신 데이터 다시 pull(화면 반영)
+                const v = res?.meta?.version || '';
+                if (v) this._setLastVersion(v);
+                await this.pullIfChanged();
+            } catch (err) {
+                console.error(err);
+                alert('정리 중 오류: ' + (err?.message || err));
+            }
+        });
+
+        localResetBtn.addEventListener('click', () => {
+            if (!confirm('이 PC(브라우저)에 저장된 데이터만 초기화할까요?\n서버(시트) 데이터는 삭제되지 않습니다.')) return;
+            try {
+                localStorage.removeItem('specialRooms');
+                localStorage.removeItem('specialReservations');
+                localStorage.removeItem('googleSheetsConfig');
+                localStorage.removeItem('serverSyncVersion');
+            } finally {
+                alert('초기화했습니다. 페이지를 새로고침합니다.');
+                location.reload();
             }
         });
         
@@ -326,9 +392,29 @@ const GoogleSheets = {
         return await res.json();
     },
 
+    /**
+     * 서버(시트) 자체를 정리하는 관리자용 기능
+     * - Rooms/Reservations의 빈 id, 중복 id, 고정 특별실 중복 등을 서버에서 직접 정리합니다.
+     * - 최소 방어로 공통 비밀번호(8714)를 요구합니다.
+     */
+    async repairServer(webAppUrl, password) {
+        const body = new URLSearchParams();
+        body.set('action', 'repair');
+        body.set('password', String(password || ''));
+        const res = await fetch(webAppUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+            body
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return await res.json();
+    },
+
     // ---- Auto sync ----
     _autoSyncTimer: null,
     _applyRemote: null,
+    _focusHandler: null,
+    _visibilityHandler: null,
 
     setApplyRemote(fn) {
         this._applyRemote = fn;
@@ -349,6 +435,9 @@ const GoogleSheets = {
     startAutoSync() {
         if (!this.isReady() || !this.config.autoPull) return;
 
+        // 재시작 시(설정 저장 등) 이벤트 리스너/타이머가 중복 누적되는 것을 방지
+        this.stopAutoSync();
+
         const pollMs = Math.max(5, Number(this.config.pollSeconds) || 20) * 1000;
 
         // 주기적 pull
@@ -357,12 +446,14 @@ const GoogleSheets = {
         }, pollMs);
 
         // 포커스/복귀 시 pull
-        window.addEventListener('focus', () => this.pullIfChanged().catch(console.error));
-        document.addEventListener('visibilitychange', () => {
+        this._focusHandler = () => this.pullIfChanged().catch(console.error);
+        this._visibilityHandler = () => {
             if (document.visibilityState === 'visible') {
                 this.pullIfChanged().catch(console.error);
             }
-        });
+        };
+        window.addEventListener('focus', this._focusHandler);
+        document.addEventListener('visibilitychange', this._visibilityHandler);
 
         // 시작 즉시 1회
         this.pullIfChanged().catch(console.error);
@@ -372,6 +463,15 @@ const GoogleSheets = {
         if (this._autoSyncTimer) {
             clearInterval(this._autoSyncTimer);
             this._autoSyncTimer = null;
+        }
+        // startAutoSync에서 붙인 리스너 제거(중복 pull 방지)
+        if (this._focusHandler) {
+            window.removeEventListener('focus', this._focusHandler);
+            this._focusHandler = null;
+        }
+        if (this._visibilityHandler) {
+            document.removeEventListener('visibilitychange', this._visibilityHandler);
+            this._visibilityHandler = null;
         }
     },
 

@@ -377,14 +377,11 @@ function setupEventListeners() {
     
     // 구글 스프레드시트 설정
     if (elements.googleSheetsConfigBtn) {
-        // 배포자가 서버 URL을 고정한 경우, 설정 버튼을 숨겨 "설정 없이 바로 사용" 느낌으로 만듭니다.
-        if (typeof window !== 'undefined' && window.APP_LOCK_SERVER_URL === true) {
-            elements.googleSheetsConfigBtn.classList.add('hidden');
-        } else {
-            elements.googleSheetsConfigBtn.addEventListener('click', () => {
-                GoogleSheets.showConfigModal();
-            });
-        }
+        // 서버 URL이 고정(잠금)이어도, 자동 저장/자동 불러오기 같은 옵션은 현장에서 조절할 수 있게
+        // 설정 모달은 계속 열리도록 둡니다. (URL/연동 on/off는 모달에서 비활성화됨)
+        elements.googleSheetsConfigBtn.addEventListener('click', () => {
+            GoogleSheets.showConfigModal();
+        });
     }
     
     // 구글 스프레드시트 동기화
