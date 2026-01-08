@@ -376,9 +376,16 @@ function setupEventListeners() {
     elements.viewMyReservationsBtn.addEventListener('click', showMyReservations);
     
     // 구글 스프레드시트 설정
-    elements.googleSheetsConfigBtn.addEventListener('click', () => {
-        GoogleSheets.showConfigModal();
-    });
+    if (elements.googleSheetsConfigBtn) {
+        // 배포자가 서버 URL을 고정한 경우, 설정 버튼을 숨겨 "설정 없이 바로 사용" 느낌으로 만듭니다.
+        if (typeof window !== 'undefined' && window.APP_LOCK_SERVER_URL === true) {
+            elements.googleSheetsConfigBtn.classList.add('hidden');
+        } else {
+            elements.googleSheetsConfigBtn.addEventListener('click', () => {
+                GoogleSheets.showConfigModal();
+            });
+        }
+    }
     
     // 구글 스프레드시트 동기화
     elements.syncToSheetsBtn.addEventListener('click', () => {

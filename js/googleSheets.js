@@ -40,6 +40,33 @@ const GoogleSheets = {
             }
             this.config = { ...this.config, ...parsed };
         }
+
+        // 저장된 설정이 없거나 webAppUrl이 비어있으면 "배포에 박아둔 기본 URL" 또는 URL 쿼리로 주입된 값을 사용합니다.
+        const bootUrl = this._getBootWebAppUrl();
+        if (!this.config.webAppUrl && bootUrl) {
+            this.config.webAppUrl = bootUrl;
+            // URL이 있으면 기본적으로 활성화
+            this.config.enabled = true;
+            this.saveConfig();
+        }
+    },
+
+    _isLocked() {
+        return typeof window !== 'undefined' && window.APP_LOCK_SERVER_URL === true;
+    },
+
+    _getBootWebAppUrl() {
+        try {
+            // 1) 쿼리 파라미터로 주입 (?server=... 또는 ?webAppUrl=...)
+            const url = new URL(window.location.href);
+            const qp = (url.searchParams.get('server') || url.searchParams.get('webAppUrl') || '').trim();
+            if (qp) return qp;
+        } catch (_) {
+            // ignore
+        }
+        // 2) index.html에 박아둔 기본값
+        const fromWindow = (typeof window !== 'undefined' && window.APP_DEFAULT_WEBAPP_URL) ? String(window.APP_DEFAULT_WEBAPP_URL).trim() : '';
+        return fromWindow || '';
     },
 
     /**
@@ -55,6 +82,7 @@ const GoogleSheets = {
     showConfigModal() {
         const modal = document.createElement('div');
         modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
+        const locked = this._isLocked();
         modal.innerHTML = `
             <div class="bg-white rounded-lg p-6 w-full max-w-md mx-4">
                 <h2 class="text-xl font-bold mb-4">서버(Apps Script) 설정</h2>
@@ -62,15 +90,15 @@ const GoogleSheets = {
                     <div class="mb-4">
                         <label class="block text-sm font-medium mb-1">Apps Script Web App URL</label>
                         <input type="text" id="gsWebAppUrl" class="w-full px-3 py-2 border rounded"
-                               value="${this.config.webAppUrl}" placeholder="https://script.google.com/macros/s/.../exec">
+                               value="${this.config.webAppUrl}" placeholder="https://script.google.com/macros/s/.../exec" ${locked ? 'disabled' : ''}>
                         <p class="text-xs text-gray-500 mt-1">
-                            Apps Script에서 \"배포\" → \"웹 앱\"으로 배포한 URL을 붙여넣으세요.
+                            ${locked ? '이 배포는 서버 URL이 고정되어 있어 변경할 수 없습니다.' : 'Apps Script에서 \"배포\" → \"웹 앱\"으로 배포한 URL을 붙여넣으세요.'}
                         </p>
                     </div>
                     <div class="mb-4">
                         <label class="flex items-center">
                             <input type="checkbox" id="gsEnabled" ${this.config.enabled ? 'checked' : ''} 
-                                   class="mr-2">
+                                   class="mr-2" ${locked ? 'disabled' : ''}>
                             <span>서버 연동 활성화</span>
                         </label>
                     </div>
@@ -117,8 +145,11 @@ const GoogleSheets = {
         
         form.addEventListener('submit', (e) => {
             e.preventDefault();
-            this.config.webAppUrl = modal.querySelector('#gsWebAppUrl').value.trim();
-            this.config.enabled = modal.querySelector('#gsEnabled').checked;
+            // 잠금 상태면 URL/활성화 여부는 배포자가 정한 값 유지
+            if (!locked) {
+                this.config.webAppUrl = modal.querySelector('#gsWebAppUrl').value.trim();
+                this.config.enabled = modal.querySelector('#gsEnabled').checked;
+            }
             this.config.autoSave = modal.querySelector('#gsAutoSave').checked;
             this.config.autoPull = modal.querySelector('#gsAutoPull').checked;
             this.config.pollSeconds = Number(modal.querySelector('#gsPollSeconds').value || 20);

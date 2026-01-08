@@ -167,6 +167,20 @@
     </div>
 
     <!-- 스크립트 로드 -->
+    <!--
+      서버(Apps Script Web App) URL을 "기본값으로 고정"하고 싶으면 여기만 1번 설정하면 됩니다.
+      - 이후 다른 사용자들은 별도 설정 없이 바로 사용 가능
+      - 필요하면 URL 쿼리로도 주입 가능: ?server=https://script.google.com/macros/s/.../exec
+
+      아래 URL을 실제 배포된 Web App URL로 바꿔주세요.
+    -->
+    <script>
+        // 기본 Apps Script Web App URL (배포 고정)
+        window.APP_DEFAULT_WEBAPP_URL = window.APP_DEFAULT_WEBAPP_URL || 'https://script.google.com/macros/s/AKfycbwBbZXA1WgbyKygN0of6t0qPohOYbSmiITbtCO_61sBMYzjOfiFwDXT4Iz-tfE0wOYF/exec';
+
+        // true면 설정 모달에서 URL을 변경하지 못하게 잠금(권장: 실사용 배포에서 true)
+        window.APP_LOCK_SERVER_URL = true;
+    </script>
     <script src="js/utils.js"></script>
     <script src="js/storage.js"></script>
     <script src="js/googleSheets.js"></script>
