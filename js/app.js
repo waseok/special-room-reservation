@@ -29,17 +29,14 @@ const SCHEDULE_SLOTS = [
     { id: '1', label: '1교시', time: '09:00~09:40' },
     { id: '2', label: '2교시', time: '09:50~10:30' },
     { id: '3', label: '3교시', time: '10:40~11:20' },
-
+    // 시간 순서대로 정렬(중/고 점심이 3교시 바로 아래에 오면 헷갈린다는 피드백 반영)
     { id: 'LUNCH_E', label: '점심(저)', time: '11:20~12:10' },
-    { id: 'LUNCH_H', label: '점심(고)', time: '12:10~13:00' },
-    { id: 'LUNCH_M', label: '점심(중)', time: '13:00~13:50' },
-
-    { id: '4E', label: '4교시(저)', time: '12:10~12:50' },
     { id: '4MH', label: '4교시(중·고)', time: '11:30~12:10' },
-
-    { id: '5EH', label: '5교시(저·고)', time: '13:00~13:40' },
+    { id: '4E', label: '4교시(저)', time: '12:10~12:50' },
+    { id: 'LUNCH_H', label: '점심(고)', time: '12:10~13:00' },
     { id: '5M', label: '5교시(중)', time: '12:20~13:00' },
-
+    { id: '5EH', label: '5교시(저·고)', time: '13:00~13:40' },
+    { id: 'LUNCH_M', label: '점심(중)', time: '13:00~13:50' },
     { id: '6', label: '6교시', time: '13:50~14:30' },
     { id: '7', label: '7교시', time: '' },
     { id: '8', label: '8교시', time: '' },
@@ -119,6 +116,60 @@ function setRoomHint_(roomId, text) {
     }
     obj[rid] = v;
     localStorage.setItem(ROOM_HINTS_STORAGE_KEY, JSON.stringify(obj));
+}
+
+// ---- Base timetable per cell (기본 배정 시간: 요일×슬롯 단위) ----
+const ROOM_BASE_CELL_HINTS_KEY = 'roomBaseCellHints';
+
+function _loadBaseCellHints_() {
+    try {
+        const raw = localStorage.getItem(ROOM_BASE_CELL_HINTS_KEY);
+        return raw ? (JSON.parse(raw) || {}) : {};
+    } catch (_) {
+        return {};
+    }
+}
+
+function _saveBaseCellHints_(obj) {
+    try {
+        localStorage.setItem(ROOM_BASE_CELL_HINTS_KEY, JSON.stringify(obj || {}));
+    } catch (_) {
+        // ignore
+    }
+}
+
+function getBaseCellHint_(roomId, dayIndex, slotId) {
+    const rid = String(roomId || '').trim();
+    if (!rid) return '';
+    const d = Number(dayIndex);
+    const s = normalizePeriodKey_(slotId);
+    if (!Number.isFinite(d) || d < 0 || d > 4 || !s) return '';
+
+    const all = _loadBaseCellHints_();
+    const roomMap = all && all[rid];
+    if (!roomMap) return '';
+    const key = `${d}:${s}`;
+    const v = roomMap[key];
+    return v != null ? String(v) : '';
+}
+
+function setBaseCellHint_(roomId, dayIndex, slotId, text) {
+    const rid = String(roomId || '').trim();
+    if (!rid) return;
+    const d = Number(dayIndex);
+    const s = normalizePeriodKey_(slotId);
+    if (!Number.isFinite(d) || d < 0 || d > 4 || !s) return;
+
+    const all = _loadBaseCellHints_();
+    if (!all[rid]) all[rid] = {};
+    const key = `${d}:${s}`;
+    const v = String(text || '');
+    if (!v.trim()) {
+        delete all[rid][key];
+    } else {
+        all[rid][key] = v;
+    }
+    _saveBaseCellHints_(all);
 }
 
 // DOM 요소 참조
@@ -802,12 +853,34 @@ function renderSchedule() {
         row.appendChild(periodCell);
         
         // 각 요일별 셀 생성
-        weekDays.forEach(day => {
+        weekDays.forEach((day, dayIndex) => {
             const cell = document.createElement('td');
             cell.className = 'border p-2 schedule-cell';
             
             const dateStr = formatDateISO(day);
             const reservation = getReservationForSlot_(AppState.currentRoomId, dateStr, slotId);
+            const baseHintText = getBaseCellHint_(AppState.currentRoomId, dayIndex, slotId);
+            const baseHintHtml = baseHintText ? `<div class="cell-base-hint">${escapeHtml(baseHintText)}</div>` : '';
+
+            // 셀 우클릭: 기본 배정 시간(=기본 타임테이블) 설정
+            cell.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                if (!requireCommonPassword('기본 배정 시간을 설정')) return;
+                const cur = getBaseCellHint_(AppState.currentRoomId, dayIndex, slotId) || '';
+                const slotMeta = getSlotMeta_(slotId);
+                const next = prompt(
+                    `[기본 배정 시간 설정]\n` +
+                    `- 특별실: ${(AppState.rooms.find(r => r.id === AppState.currentRoomId)?.name) || ''}\n` +
+                    `- 요일: ${['월','화','수','목','금'][dayIndex]}\n` +
+                    `- 슬롯: ${slotMeta.label}${slotMeta.time ? ` (${slotMeta.time})` : ''}\n\n` +
+                    `입력한 문구가 해당 셀에 옅게 표시됩니다.\n` +
+                    `비우면(공백) 삭제됩니다.`,
+                    cur
+                );
+                if (next === null) return;
+                setBaseCellHint_(AppState.currentRoomId, dayIndex, slotId, next);
+                renderSchedule(); // 즉시 반영
+            });
             
             // 드래그앤드롭 이벤트
             cell.addEventListener('dragover', (e) => {
@@ -843,6 +916,7 @@ function renderSchedule() {
                         </div>
                         ${reservation.class ? `<div class="reservation-class">${escapeHtml(reservation.class)}</div>` : ''}
                     </div>
+                    ${baseHintHtml}
                 `;
                 cell.addEventListener('click', () => {
                     // 수정/삭제는 공통 비밀번호 필요
@@ -853,6 +927,8 @@ function renderSchedule() {
             } else {
                 // 빈 칸인 경우
                 authorizedReservationId = null;
+                // 기본 배정 문구만 표시(예약이 없어도 셀 안에 보이게)
+                if (baseHintHtml) cell.innerHTML = baseHintHtml;
                 cell.addEventListener('click', () => showReservationModal(null, dateStr, slotId, AppState.currentRoomId));
             }
             

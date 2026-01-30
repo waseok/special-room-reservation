@@ -93,6 +93,20 @@
     white-space: nowrap;
 }
 
+/* 기본 배정 시간(각 셀 워터마크) */
+.cell-base-hint {
+    position: absolute;
+    right: 6px;
+    bottom: 4px;
+    font-size: 0.70rem;
+    line-height: 1.15;
+    color: #6b7280;
+    opacity: 0.35;
+    white-space: pre-line;
+    pointer-events: none;
+    text-align: right;
+}
+
 /* 상태 아이콘 스타일 */
 .status-icon {
     display: inline-block;
