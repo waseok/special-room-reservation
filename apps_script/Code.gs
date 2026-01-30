@@ -21,6 +21,7 @@
 
 const SHEET_ROOMS = 'Rooms';
 const SHEET_RES = 'Reservations';
+const SHEET_HINTS = 'Hints';
 
 function doGet(e) {
   const action = (e && e.parameter && e.parameter.action) || '';
@@ -31,6 +32,7 @@ function doGet(e) {
       meta: meta,
       rooms: readObjects_(SHEET_ROOMS),
       reservations: readObjects_(SHEET_RES),
+      hints: readObjects_(SHEET_HINTS),
     });
   }
   return json_({ ok: false, error: 'unknown_action' });
@@ -51,10 +53,12 @@ function doPost(e) {
 
     const rooms = Array.isArray(payload.rooms) ? payload.rooms : [];
     const reservations = Array.isArray(payload.reservations) ? payload.reservations : [];
+    const hints = Array.isArray(payload.hints) ? payload.hints : [];
 
     // upsert
     upsertById_(SHEET_ROOMS, rooms);
     upsertById_(SHEET_RES, reservations);
+    upsertById_(SHEET_HINTS, hints);
 
     return json_({ ok: true, meta: computeMeta_() });
   }
@@ -102,6 +106,27 @@ function doPost(e) {
     return json_({ ok: true, meta: computeMeta_() });
   }
 
+  // ---- Hints (기본 배정/워터마크) ----
+  if (action === 'upsertHint') {
+    const payloadStr = (e && e.parameter && e.parameter.payload) || '';
+    if (!payloadStr) return json_({ ok: false, error: 'missing_payload' });
+    let hint;
+    try {
+      hint = JSON.parse(payloadStr);
+    } catch (err) {
+      return json_({ ok: false, error: 'invalid_json' });
+    }
+    upsertById_(SHEET_HINTS, [hint]);
+    return json_({ ok: true, meta: computeMeta_() });
+  }
+
+  if (action === 'deleteHint') {
+    const id = (e && e.parameter && e.parameter.id) || '';
+    if (!id) return json_({ ok: false, error: 'missing_id' });
+    deleteById_(SHEET_HINTS, id);
+    return json_({ ok: true, meta: computeMeta_() });
+  }
+
   // ---- Admin/Repair ----
   // 시트가 수동 편집 등으로 지저분해졌을 때(중복 id, 같은 이름의 방이 여러 개 등)
   // "서버(시트) 자체"를 한 번에 정리하는 관리자용 엔드포인트입니다.
@@ -132,8 +157,12 @@ function ss_() {
 }
 
 function sheet_(name) {
-  const s = ss_().getSheetByName(name);
-  if (!s) throw new Error('Missing sheet: ' + name);
+  const ss = ss_();
+  let s = ss.getSheetByName(name);
+  if (!s) {
+    // 새 기능(Hints 등) 추가 시, 기존 시트에 탭이 없으면 자동 생성해 운영 부담을 줄입니다.
+    s = ss.insertSheet(name);
+  }
   return s;
 }
 
@@ -159,7 +188,8 @@ function json_(obj) {
 function computeMeta_() {
   const v1 = maxTimestamp_(SHEET_ROOMS);
   const v2 = maxTimestamp_(SHEET_RES);
-  const version = [v1, v2].sort().pop() || new Date().toISOString();
+  const v3 = maxTimestamp_(SHEET_HINTS);
+  const version = [v1, v2, v3].sort().pop() || new Date().toISOString();
   return { version: version, serverTime: new Date().toISOString() };
 }
 
@@ -187,6 +217,12 @@ function maxTimestamp_(sheetName) {
 }
 
 function readObjects_(sheetName) {
+  // 탭이 없으면 빈 배열(기능 비활성/미생성 상태에서도 export가 깨지지 않게)
+  try {
+    sheet_(sheetName);
+  } catch (e) {
+    return [];
+  }
   const sh = sheet_(sheetName);
   const lastRow = sh.getLastRow();
   const lastCol = sh.getLastColumn();
@@ -303,9 +339,15 @@ function upsertById_(sheetName, items) {
     if (sheetName === SHEET_ROOMS) {
       sh.getRange(1, 1, 1, 4).setValues([['id', 'name', 'createdAt', 'updatedAt']]);
     } else {
-      sh
-        .getRange(1, 1, 1, 9)
-        .setValues([['id', 'roomId', 'date', 'period', 'name', 'class', 'purpose', 'createdAt', 'updatedAt']]);
+      if (sheetName === SHEET_RES) {
+        sh
+          .getRange(1, 1, 1, 9)
+          .setValues([['id', 'roomId', 'date', 'period', 'name', 'class', 'purpose', 'createdAt', 'updatedAt']]);
+      } else if (sheetName === SHEET_HINTS) {
+        sh
+          .getRange(1, 1, 1, 8)
+          .setValues([['id', 'kind', 'roomId', 'dayIndex', 'slotId', 'text', 'createdAt', 'updatedAt']]);
+      }
     }
   }
 

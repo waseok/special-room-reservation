@@ -98,10 +98,12 @@
     position: absolute;
     right: 6px;
     bottom: 4px;
-    font-size: 0.70rem;
+    /* 너무 작고 흐리다는 피드백 반영: 약간 키우고 조금 더 진하게 */
+    font-size: 0.85rem;
     line-height: 1.15;
-    color: #6b7280;
-    opacity: 0.35;
+    color: #4b5563;
+    opacity: 0.60;
+    font-weight: 600;
     white-space: pre-line;
     pointer-events: none;
     text-align: right;

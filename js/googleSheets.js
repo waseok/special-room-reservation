@@ -269,7 +269,10 @@ const GoogleSheets = {
         try {
             const rooms = Storage.getRooms();
             const reservations = Storage.getReservations();
-            await this.upsertAll(this.config.webAppUrl, { rooms, reservations });
+            const hints = (typeof window !== 'undefined' && typeof window.AppHints?.exportAllHints === 'function')
+                ? window.AppHints.exportAllHints()
+                : [];
+            await this.upsertAll(this.config.webAppUrl, { rooms, reservations, hints });
             alert('서버(구글 시트)에 저장되었습니다.');
         } catch (error) {
             console.error('동기화 오류:', error);
@@ -294,6 +297,10 @@ const GoogleSheets = {
             const data = await this.exportAll(this.config.webAppUrl);
             if (data.rooms) Storage.saveRooms(data.rooms);
             if (data.reservations) Storage.saveReservations(data.reservations);
+            // 기본 배정(힌트)도 함께 적용(여러 PC/브라우저 공유)
+            if (typeof window !== 'undefined' && typeof window.AppHints?.applyHintsFromServer === 'function') {
+                window.AppHints.applyHintsFromServer(data.hints || []);
+            }
 
             // 불러오기 후: 고정방 강제 + 중복 정리 + 예약 roomId 마이그레이션
             Storage.ensureFixedRooms?.();
@@ -382,6 +389,32 @@ const GoogleSheets = {
     async deleteRoom(webAppUrl, id) {
         const body = new URLSearchParams();
         body.set('action', 'deleteRoom');
+        body.set('id', id);
+        const res = await fetch(webAppUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+            body
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return await res.json();
+    },
+
+    async upsertHint(webAppUrl, hint) {
+        const body = new URLSearchParams();
+        body.set('action', 'upsertHint');
+        body.set('payload', JSON.stringify(hint));
+        const res = await fetch(webAppUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+            body
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return await res.json();
+    },
+
+    async deleteHint(webAppUrl, id) {
+        const body = new URLSearchParams();
+        body.set('action', 'deleteHint');
         body.set('id', id);
         const res = await fetch(webAppUrl, {
             method: 'POST',
@@ -486,12 +519,13 @@ const GoogleSheets = {
         // (네트워크/서버 오류로 {}만 내려오면 local이 \"사라진 것처럼\" 보일 수 있음)
         if (data.rooms != null && !Array.isArray(data.rooms)) return;
         if (data.reservations != null && !Array.isArray(data.reservations)) return;
+        if (data.hints != null && !Array.isArray(data.hints)) return;
 
         const serverV = data?.meta?.version || '';
         const lastV = this._getLastVersion();
         if (serverV && serverV !== lastV) {
             this._setLastVersion(serverV);
-            await this._applyRemote({ rooms: data.rooms || [], reservations: data.reservations || [] });
+            await this._applyRemote({ rooms: data.rooms || [], reservations: data.reservations || [], hints: data.hints || [] });
         }
     },
 
@@ -526,6 +560,8 @@ const GoogleSheets = {
                 if (t.type === 'upsertReservation') await this.upsertReservation(this.config.webAppUrl, t.data);
                 if (t.type === 'deleteRoom') await this.deleteRoom(this.config.webAppUrl, t.id);
                 if (t.type === 'deleteReservation') await this.deleteReservation(this.config.webAppUrl, t.id);
+                if (t.type === 'upsertHint') await this.upsertHint(this.config.webAppUrl, t.data);
+                if (t.type === 'deleteHint') await this.deleteHint(this.config.webAppUrl, t.id);
             }
 
             // 저장 후 서버 버전 갱신(다음 pull 비교에 사용)

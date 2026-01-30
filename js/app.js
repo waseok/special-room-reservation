@@ -116,6 +116,17 @@ function setRoomHint_(roomId, text) {
     }
     obj[rid] = v;
     localStorage.setItem(ROOM_HINTS_STORAGE_KEY, JSON.stringify(obj));
+
+    // 서버 공유(여러 PC/브라우저)
+    if (typeof GoogleSheets !== 'undefined') {
+        const id = `hint-room:${rid}`;
+        const payload = { id, kind: 'room', roomId: rid, text: v };
+        if (v.trim()) {
+            GoogleSheets.queueSave?.({ type: 'upsertHint', id, data: payload });
+        } else {
+            GoogleSheets.queueSave?.({ type: 'deleteHint', id });
+        }
+    }
 }
 
 // ---- Base timetable per cell (기본 배정 시간: 요일×슬롯 단위) ----
@@ -170,6 +181,112 @@ function setBaseCellHint_(roomId, dayIndex, slotId, text) {
         all[rid][key] = v;
     }
     _saveBaseCellHints_(all);
+
+    // 서버 공유(여러 PC/브라우저)
+    if (typeof GoogleSheets !== 'undefined') {
+        const sid = normalizePeriodKey_(slotId);
+        const id = `hint-cell:${rid}:${d}:${sid}`;
+        const payload = { id, kind: 'cell', roomId: rid, dayIndex: d, slotId: sid, text: v };
+        if (v.trim()) {
+            GoogleSheets.queueSave?.({ type: 'upsertHint', id, data: payload });
+        } else {
+            GoogleSheets.queueSave?.({ type: 'deleteHint', id });
+        }
+    }
+}
+
+/**
+ * GoogleSheets.js가 힌트를 export/import 할 수 있도록 window에 유틸을 노출합니다.
+ * - exportAllHints(): 로컬(roomHintById + roomBaseCellHints)을 서버 형식 배열로 변환
+ * - applyHintsFromServer(hints): 서버 배열을 로컬 스토리지로 반영
+ */
+if (typeof window !== 'undefined') {
+    window.AppHints = window.AppHints || {};
+
+    window.AppHints.exportAllHints = function exportAllHints() {
+        const out = [];
+        // 1) 방 제목 워터마크
+        try {
+            const raw = localStorage.getItem(ROOM_HINTS_STORAGE_KEY);
+            const obj = raw ? (JSON.parse(raw) || {}) : {};
+            for (const rid in obj) {
+                const text = String(obj[rid] ?? '');
+                const roomId = String(rid || '').trim();
+                if (!roomId || !text.trim()) continue;
+                out.push({ id: `hint-room:${roomId}`, kind: 'room', roomId, text });
+            }
+        } catch (_) {
+            // ignore
+        }
+
+        // 2) 셀별 기본 배정
+        try {
+            const raw = localStorage.getItem(ROOM_BASE_CELL_HINTS_KEY);
+            const all = raw ? (JSON.parse(raw) || {}) : {};
+            for (const rid in all) {
+                const roomId = String(rid || '').trim();
+                if (!roomId) continue;
+                const roomMap = all[rid] || {};
+                for (const k in roomMap) {
+                    const text = String(roomMap[k] ?? '');
+                    if (!text.trim()) continue;
+                    // key: "dayIndex:slotId"
+                    const m = String(k).match(/^(\d+):(.+)$/);
+                    if (!m) continue;
+                    const dayIndex = Number(m[1]);
+                    const slotId = normalizePeriodKey_(m[2]);
+                    if (!Number.isFinite(dayIndex) || !slotId) continue;
+                    out.push({
+                        id: `hint-cell:${roomId}:${dayIndex}:${slotId}`,
+                        kind: 'cell',
+                        roomId,
+                        dayIndex,
+                        slotId,
+                        text,
+                    });
+                }
+            }
+        } catch (_) {
+            // ignore
+        }
+
+        return out;
+    };
+
+    window.AppHints.applyHintsFromServer = function applyHintsFromServer(hints) {
+        const arr = Array.isArray(hints) ? hints : [];
+        const roomHints = {};
+        const cellHints = {};
+
+        for (const h of arr) {
+            if (!h) continue;
+            const kind = String(h.kind || '').trim();
+            const roomId = String(h.roomId || '').trim();
+            const text = String(h.text ?? '');
+            if (!roomId || !text.trim()) continue;
+
+            if (kind === 'room') {
+                roomHints[roomId] = text;
+                continue;
+            }
+            if (kind === 'cell') {
+                const d = Number(h.dayIndex);
+                const slotId = normalizePeriodKey_(h.slotId || '');
+                if (!Number.isFinite(d) || d < 0 || d > 4 || !slotId) continue;
+                if (!cellHints[roomId]) cellHints[roomId] = {};
+                cellHints[roomId][`${d}:${slotId}`] = text;
+            }
+        }
+
+        // 서버를 "공유 소스"로 보고, 로컬을 서버값으로 갱신합니다.
+        // (현장 운영에서 여러 PC가 보이는 게 우선)
+        try {
+            localStorage.setItem(ROOM_HINTS_STORAGE_KEY, JSON.stringify(roomHints));
+        } catch (_) {}
+        try {
+            localStorage.setItem(ROOM_BASE_CELL_HINTS_KEY, JSON.stringify(cellHints));
+        } catch (_) {}
+    };
 }
 
 // DOM 요소 참조
@@ -301,7 +418,7 @@ function init() {
 
     // 서버 자동 동기화: 원격 데이터 적용 핸들러 등록 + 시작
     if (typeof GoogleSheets !== 'undefined') {
-        GoogleSheets.setApplyRemote(async ({ rooms, reservations }) => {
+        GoogleSheets.setApplyRemote(async ({ rooms, reservations, hints }) => {
             // 서버 데이터 적용: \"그냥 덮어쓰기\"는 위험합니다.
             // - Sheets/Apps Script 특성상 date/period 타입이 흔들리거나
             // - 헤더/빈값 때문에 원격 객체가 불완전하게 내려오면
@@ -317,6 +434,7 @@ function init() {
 
             const remoteRooms = Array.isArray(rooms) ? rooms : [];
             const remoteRes = Array.isArray(reservations) ? reservations : [];
+            const remoteHints = Array.isArray(hints) ? hints : [];
 
             // 고정방 이름 기반으로 "원격 roomId -> canonical roomId" 매핑 생성
             // (원격에 같은 이름의 방이 다른 id로 존재하면 예약이 다른 방으로 보이거나 중복/유실이 발생할 수 있음)
@@ -455,6 +573,11 @@ function init() {
 
             Storage.saveRooms(Array.from(roomMap.values()));
             Storage.saveReservations(Array.from(resMap.values()));
+
+            // 힌트(기본 배정/워터마크) 반영: 여러 PC/브라우저 공유
+            if (typeof window !== 'undefined' && typeof window.AppHints?.applyHintsFromServer === 'function') {
+                window.AppHints.applyHintsFromServer(remoteHints);
+            }
             // 최종적으로 고정방 강제 + 이름 중복 방 정리 + 예약 roomId 마이그레이션
             Storage.ensureFixedRooms?.();
             loadRooms();
