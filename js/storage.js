@@ -389,20 +389,20 @@ const Storage = {
      * 특정 날짜와 교시의 예약을 가져옵니다.
      * @param {string} roomId - 특별실 ID
      * @param {string} date - 날짜 (YYYY-MM-DD)
-     * @param {number} period - 교시 (1~10)
+     * @param {string|number} period - 교시/슬롯 (예: 1~10 또는 "4E", "LUNCH_M")
      * @returns {Object|null} 예약 객체 또는 null
      */
     getReservation(roomId, date, period) {
         const reservations = this.getReservations();
         const rid = String(roomId || '').trim();
         const d = this._normalizeDateISO(date);
-        const p = Number(period);
+        const p = this._normalizePeriodKey(period);
 
         return reservations.find(res => {
             if (!res) return false;
             const resRoomId = String(res.roomId || '').trim();
             const resDate = this._normalizeDateISO(res.date);
-            const resPeriod = Number(res.period);
+            const resPeriod = this._normalizePeriodKey(res.period);
             return resRoomId === rid && resDate === d && resPeriod === p;
         }) || null;
     },
@@ -452,8 +452,9 @@ const Storage = {
         out.date = this._normalizeDateISO(out.date);
 
         // period (표준: number)
-        const p = Number(out.period);
-        out.period = Number.isFinite(p) ? p : out.period;
+        // - 기존 데이터는 1~10 숫자/문자
+        // - 확장 슬롯은 "4E", "LUNCH_M" 같은 문자열을 사용
+        out.period = this._normalizePeriodKey(out.period);
 
         // 문자열 필드
         if (out.name != null) out.name = String(out.name).trim();
@@ -464,6 +465,24 @@ const Storage = {
         if (!out.createdAt && out.createAt) out.createdAt = out.createAt;
 
         return out;
+    },
+
+    /**
+     * 교시/슬롯 키를 비교 가능한 문자열로 정규화합니다.
+     * - 1, "1", "01" -> "1"
+     * - "4E", "LUNCH_M" -> 그대로(trim만)
+     * @param {any} value
+     * @returns {string}
+     */
+    _normalizePeriodKey(value) {
+        if (value == null) return '';
+        const s = String(value).trim();
+        if (!s) return '';
+        const n = Number(s);
+        if (Number.isFinite(n) && String(n) === String(parseInt(String(n), 10))) {
+            return String(n);
+        }
+        return s;
     },
 
     /**

@@ -83,6 +83,16 @@
     text-align: center;
 }
 
+/* 교시 시간 표시(작은 글씨) */
+.period-time {
+    font-size: 0.70rem;
+    line-height: 1.1;
+    opacity: 0.75;
+    font-weight: 500;
+    margin-top: 2px;
+    white-space: nowrap;
+}
+
 /* 상태 아이콘 스타일 */
 .status-icon {
     display: inline-block;

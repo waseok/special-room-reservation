@@ -14,6 +14,113 @@ const AppState = {
 // 공통 비밀번호 (특별실 삭제 / 예약 수정·삭제)
 const COMMON_PASSWORD = '8714';
 
+/**
+ * 시간표 슬롯 정의
+ * - id: 저장/매칭에 쓰이는 period 키(숫자 교시 또는 확장 슬롯 문자열)
+ * - label: 화면에 표시할 라벨
+ * - time: 화면에 표시할 시간 문자열
+ *
+ * NOTE:
+ * - 기존 데이터(1~10교시)는 id가 "1"~"10"인 슬롯으로 그대로 호환됩니다.
+ * - 4/5교시는 학교급 시간대가 달라서 2블록으로 분리합니다.
+ * - 점심은 3블록으로 분리합니다.
+ */
+const SCHEDULE_SLOTS = [
+    { id: '1', label: '1교시', time: '09:00~09:40' },
+    { id: '2', label: '2교시', time: '09:50~10:30' },
+    { id: '3', label: '3교시', time: '10:40~11:20' },
+
+    { id: 'LUNCH_E', label: '점심(저)', time: '11:20~12:10' },
+    { id: 'LUNCH_H', label: '점심(고)', time: '12:10~13:00' },
+    { id: 'LUNCH_M', label: '점심(중)', time: '13:00~13:50' },
+
+    { id: '4E', label: '4교시(저)', time: '12:10~12:50' },
+    { id: '4MH', label: '4교시(중·고)', time: '11:30~12:10' },
+
+    { id: '5EH', label: '5교시(저·고)', time: '13:00~13:40' },
+    { id: '5M', label: '5교시(중)', time: '12:20~13:00' },
+
+    { id: '6', label: '6교시', time: '13:50~14:30' },
+    { id: '7', label: '7교시', time: '' },
+    { id: '8', label: '8교시', time: '' },
+    { id: '9', label: '9교시', time: '' },
+    { id: '10', label: '10교시', time: '' },
+];
+
+/**
+ * 기본 배정 시간(워터마크) 표시용
+ * - roomId 기준으로 우측 상단에 작은 글씨로 보여줍니다.
+ * - 값은 현장 규칙에 맞게 자유롭게 수정/확장하세요.
+ */
+const ROOM_PREASSIGNED_HINTS = {
+    // 고정 특별실 예시(필요한 내용으로 교체하세요)
+    'room-fixed-music': '',
+    'room-fixed-library': '',
+    // 사용자가 말한 "다목적실"이 어떤 방인지 확실치 않아 두 고정방에도 자리를 마련해둡니다.
+    'room-fixed-4f-meeting': '',
+    'room-fixed-1f-av': '',
+};
+
+function normalizePeriodKey_(v) {
+    if (v == null) return '';
+    const s = String(v).trim();
+    if (!s) return '';
+    const n = Number(s);
+    return Number.isFinite(n) ? String(n) : s;
+}
+
+function getSlotMeta_(slotId) {
+    const key = normalizePeriodKey_(slotId);
+    return SCHEDULE_SLOTS.find(s => s.id === key) || { id: key, label: `${key}교시`, time: '' };
+}
+
+// ---- Room watermark(기본 배정 시간) ----
+const ROOM_HINTS_STORAGE_KEY = 'roomHintById';
+
+/**
+ * 슬롯별 예약 조회(하위 호환 포함)
+ * - 기존 데이터가 period=4,5(통합)로 저장돼 있으면
+ *   신규 2블록(4E/4MH, 5EH/5M)에서도 "예약됨"으로 보이게 합니다.
+ */
+function getReservationForSlot_(roomId, dateStr, slotId) {
+    const key = normalizePeriodKey_(slotId);
+    const direct = Storage.getReservation(roomId, dateStr, key);
+    if (direct) return direct;
+    // legacy fallback
+    if (key === '4E' || key === '4MH') return Storage.getReservation(roomId, dateStr, '4');
+    if (key === '5EH' || key === '5M') return Storage.getReservation(roomId, dateStr, '5');
+    return null;
+}
+
+function getRoomHint_(roomId) {
+    const rid = String(roomId || '').trim();
+    if (!rid) return '';
+    try {
+        const raw = localStorage.getItem(ROOM_HINTS_STORAGE_KEY);
+        const obj = raw ? JSON.parse(raw) : {};
+        const v = obj && obj[rid];
+        if (v != null && String(v).trim()) return String(v);
+    } catch (_) {
+        // ignore
+    }
+    return String(ROOM_PREASSIGNED_HINTS[rid] || '');
+}
+
+function setRoomHint_(roomId, text) {
+    const rid = String(roomId || '').trim();
+    if (!rid) return;
+    const v = String(text || '');
+    let obj = {};
+    try {
+        const raw = localStorage.getItem(ROOM_HINTS_STORAGE_KEY);
+        obj = raw ? JSON.parse(raw) : {};
+    } catch (_) {
+        obj = {};
+    }
+    obj[rid] = v;
+    localStorage.setItem(ROOM_HINTS_STORAGE_KEY, JSON.stringify(obj));
+}
+
 // DOM 요소 참조
 const elements = {
     // 상단 컨트롤
@@ -33,6 +140,8 @@ const elements = {
     // 시간표
     scheduleTable: document.getElementById('scheduleTable'),
     scheduleTitle: document.getElementById('scheduleTitle'),
+    scheduleTitleText: document.getElementById('scheduleTitleText'),
+    scheduleTitleHint: document.getElementById('scheduleTitleHint'),
     scheduleBody: document.getElementById('scheduleBody'),
     monday: document.getElementById('monday'),
     tuesday: document.getElementById('tuesday'),
@@ -209,8 +318,8 @@ function init() {
                 // 고정방 roomId는 canonical로 통합(merge 이전에 적용해야 중복 생성이 안 됨)
                 if (fixedIdMap[out.roomId]) out.roomId = fixedIdMap[out.roomId];
                 out.date = Storage?._normalizeDateISO ? Storage._normalizeDateISO(out.date) : String(out.date || '').trim();
-                const p = Number(out.period);
-                out.period = Number.isFinite(p) ? p : out.period;
+                // 교시/슬롯(period)을 문자열 키로 정규화 (예: 1, "1" -> "1", "4E" -> "4E")
+                out.period = normalizePeriodKey_(out.period);
                 return out;
             };
 
@@ -219,7 +328,8 @@ function init() {
                 let q = 0;
                 if (r.roomId) q++;
                 if (r.date) q++;
-                if (Number.isFinite(Number(r.period))) q++;
+                // 확장 슬롯(period가 문자열이어도) 존재하면 품질로 인정
+                if (r.period != null && String(r.period).trim()) q++;
                 if (r.name != null && String(r.name).trim()) q++;
                 return q;
             };
@@ -241,7 +351,7 @@ function init() {
                 return (
                     String(a.roomId || '').trim() === String(b.roomId || '').trim() &&
                     String(a.date || '').trim() === String(b.date || '').trim() &&
-                    Number(a.period) === Number(b.period)
+                    normalizePeriodKey_(a.period) === normalizePeriodKey_(b.period)
                 );
             };
 
@@ -445,15 +555,9 @@ function requestDeleteRoom(room) {
     }
 }
 
-/**
- * 특별실 삭제
- */
-function deleteRoom(roomId) {
-    Storage.deleteRoom(roomId);
-    loadRooms();
-    loadReservations();
-    renderSchedule();
-}
+// NOTE:
+// - `deleteRoom()`은 아래쪽에 "고정방 방어 + 선택 상태 처리 + 서버 반영(자동)" 로직이 포함된 버전이 있습니다.
+// - 과거 버전이 중복 정의되어 있어(동일 이름 함수 2개) 유지보수가 어렵고 버그 유발 가능성이 커서 제거합니다.
 
 /**
  * 특별실 탭 렌더링
@@ -516,6 +620,9 @@ function showRoomContextMenu(e, room) {
         <button class="block w-full text-left px-4 py-2 ${isFixed ? 'text-gray-400 cursor-not-allowed' : 'hover:bg-gray-100 text-red-600'} delete-room-menu" data-room-id="${room.id}">
             삭제${isFixed ? ' (고정)' : ''}
         </button>
+        <button class="block w-full text-left px-4 py-2 hover:bg-gray-100 room-hint-menu" data-room-id="${room.id}">
+            기본 배정 시간 표시 설정
+        </button>
     `;
     
     document.body.appendChild(menu);
@@ -534,6 +641,30 @@ function showRoomContextMenu(e, room) {
             alert('이 특별실은 고정 특별실이라 삭제할 수 없습니다.');
         } else {
             requestDeleteRoom(room);
+        }
+        document.body.removeChild(menu);
+    });
+
+    menu.querySelector('.room-hint-menu').addEventListener('click', () => {
+        // 고정방 포함: 표시 설정은 허용(삭제/이름변경과 달리 운영 편의를 위해 열어둠)
+        if (!requireCommonPassword('기본 배정 시간 표시를 설정')) {
+            document.body.removeChild(menu);
+            return;
+        }
+        const cur = getRoomHint_(room.id) || '';
+        const next = prompt(
+            `${room.name} 우측 상단에 표시할 문구를 입력하세요.\n` +
+            `- 여러 줄은 줄바꿈(\\n)으로 입력할 수 있습니다.\n` +
+            `- 비우면 표시되지 않습니다.\n\n` +
+            `예) 기본 배정: 월1~2, 수3\n`,
+            cur
+        );
+        if (next !== null) {
+            setRoomHint_(room.id, next);
+            // 현재 선택된 방이면 즉시 반영
+            if (elements.scheduleTitleHint && AppState.currentRoomId === room.id) {
+                elements.scheduleTitleHint.textContent = String(getRoomHint_(room.id) || '');
+            }
         }
         document.body.removeChild(menu);
     });
@@ -556,8 +687,17 @@ function showRoomContextMenu(e, room) {
 function selectRoom(roomId) {
     AppState.currentRoomId = roomId;
     const room = AppState.rooms.find(r => r.id === roomId);
-    if (elements.scheduleTitle) {
-        elements.scheduleTitle.textContent = room ? `${room.name} 시간표` : '특별실을 선택하세요';
+    const title = room ? `${room.name} 시간표` : '특별실을 선택하세요';
+    // 신규 레이아웃: 좌측 제목 + 우측 워터마크
+    if (elements.scheduleTitleText) {
+        elements.scheduleTitleText.textContent = title;
+    } else if (elements.scheduleTitle) {
+        // 구형 HTML(혹시 모를 호환) fallback
+        elements.scheduleTitle.textContent = title;
+    }
+    if (elements.scheduleTitleHint) {
+        const hint = room ? getRoomHint_(room.id) : '';
+        elements.scheduleTitleHint.textContent = String(hint || '');
     }
     applyRoomTheme(roomId);
     renderRoomTabs();
@@ -629,9 +769,8 @@ function updateWeekSelector() {
  */
 function renderSchedule() {
     if (!AppState.currentRoomId) {
-        if (elements.scheduleTitle) {
-            elements.scheduleTitle.textContent = '특별실을 선택하세요';
-        }
+        if (elements.scheduleTitleText) elements.scheduleTitleText.textContent = '특별실을 선택하세요';
+        if (elements.scheduleTitleHint) elements.scheduleTitleHint.textContent = '';
         elements.scheduleBody.innerHTML = '<tr><td colspan="6" class="text-center p-8 text-gray-500">특별실을 선택해주세요</td></tr>';
         return;
     }
@@ -649,13 +788,17 @@ function renderSchedule() {
     // 시간표 본문 생성
     elements.scheduleBody.innerHTML = '';
     
-    for (let period = 1; period <= 10; period++) {
+    for (const slot of SCHEDULE_SLOTS) {
+        const slotId = slot.id;
         const row = document.createElement('tr');
         
         // 교시 번호 셀
         const periodCell = document.createElement('td');
         periodCell.className = 'border p-2 text-center bg-gray-50 period-number';
-        periodCell.textContent = period;
+        periodCell.innerHTML = `
+            <div>${escapeHtml(slot.label)}</div>
+            ${slot.time ? `<div class="period-time">${escapeHtml(slot.time)}</div>` : ''}
+        `;
         row.appendChild(periodCell);
         
         // 각 요일별 셀 생성
@@ -664,7 +807,7 @@ function renderSchedule() {
             cell.className = 'border p-2 schedule-cell';
             
             const dateStr = formatDateISO(day);
-            const reservation = Storage.getReservation(AppState.currentRoomId, dateStr, period);
+            const reservation = getReservationForSlot_(AppState.currentRoomId, dateStr, slotId);
             
             // 드래그앤드롭 이벤트
             cell.addEventListener('dragover', (e) => {
@@ -684,7 +827,7 @@ function renderSchedule() {
                 
                 if (AppState.draggedRoom) {
                     // 드롭한 위치의 시간으로 예약 모달 열기
-                    showReservationModal(null, dateStr, period, AppState.draggedRoom.id);
+                    showReservationModal(null, dateStr, slotId, AppState.draggedRoom.id);
                     AppState.draggedRoom = null;
                 }
             });
@@ -710,7 +853,7 @@ function renderSchedule() {
             } else {
                 // 빈 칸인 경우
                 authorizedReservationId = null;
-                cell.addEventListener('click', () => showReservationModal(null, dateStr, period, AppState.currentRoomId));
+                cell.addEventListener('click', () => showReservationModal(null, dateStr, slotId, AppState.currentRoomId));
             }
             
             row.appendChild(cell);
@@ -771,7 +914,8 @@ function handleReservationSubmit(e) {
     const reservationData = {
         roomId: elements.reservationRoomId.value,
         date: elements.reservationDate.value,
-        period: parseInt(elements.reservationPeriod.value),
+        // 확장 슬롯 지원(예: "4E", "LUNCH_M")
+        period: elements.reservationPeriod.value,
         name: elements.reservationName.value.trim(),
         class: elements.reservationClass.value.trim(),
         purpose: elements.reservationPurpose.value.trim(),
@@ -941,6 +1085,7 @@ function showMyReservations() {
                 ${myReservations.map(res => {
                     const room = rooms.find(r => r.id === res.roomId);
                     const date = parseDateISO(res.date);
+                    const slot = getSlotMeta_(res.period);
                     
                     return `
                         <div class="border rounded p-3 hover:bg-gray-50">
@@ -948,7 +1093,7 @@ function showMyReservations() {
                                 <div>
                                     <div class="font-semibold">${room ? room.name : '알 수 없음'}</div>
                                     <div class="text-sm text-gray-600">
-                                        ${formatDate(date)} ${res.period}교시
+                                        ${formatDate(date)} ${escapeHtml(slot.label)}${slot.time ? ` <span class="opacity-70">(${escapeHtml(slot.time)})</span>` : ''}
                                         ${res.class ? ` | ${res.class}` : ''}
                                     </div>
                                     ${res.purpose ? `<div class="text-sm text-gray-500 mt-1">${escapeHtml(res.purpose)}</div>` : ''}
