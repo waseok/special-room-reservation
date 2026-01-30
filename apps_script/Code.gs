@@ -357,7 +357,27 @@ function upsertById_(sheetName, items) {
   const headNorm = head.map(normalizeKey_);
 
   const idCol = headNorm.indexOf('id');
-  if (idCol === -1) throw new Error('Missing id column in ' + sheetName);
+  if (idCol === -1) {
+    // 사용자가 시트 탭만 만들고 헤더를 임의로 작성한 경우(또는 누락) 저장이 전부 실패합니다.
+    // 운영 편의를 위해, 알려진 시트는 헤더를 강제로 표준화한 뒤 다시 진행합니다.
+    if (sheetName === SHEET_ROOMS) {
+      sh.getRange(1, 1, 1, 4).setValues([['id', 'name', 'createdAt', 'updatedAt']]);
+    } else if (sheetName === SHEET_RES) {
+      sh.getRange(1, 1, 1, 9).setValues([['id', 'roomId', 'date', 'period', 'name', 'class', 'purpose', 'createdAt', 'updatedAt']]);
+    } else if (sheetName === SHEET_HINTS) {
+      sh.getRange(1, 1, 1, 8).setValues([['id', 'kind', 'roomId', 'dayIndex', 'slotId', 'text', 'createdAt', 'updatedAt']]);
+    } else {
+      throw new Error('Missing id column in ' + sheetName);
+    }
+    // 헤더 다시 읽기
+    const head2 = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(h => String(h || '').trim());
+    const headNorm2 = head2.map(normalizeKey_);
+    const idCol2 = headNorm2.indexOf('id');
+    if (idCol2 === -1) throw new Error('Missing id column in ' + sheetName);
+    // 아래 로직에서 head/headNorm 대신 head2/headNorm2를 쓰기 위해 재할당
+    for (let i = 0; i < head.length; i++) head[i] = head2[i];
+    for (let i = 0; i < headNorm.length; i++) headNorm[i] = headNorm2[i];
+  }
 
   // 기존 id -> row index(1-based)
   const idToRow = {};

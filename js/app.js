@@ -121,11 +121,26 @@ function setRoomHint_(roomId, text) {
     if (typeof GoogleSheets !== 'undefined') {
         const id = `hint-room:${rid}`;
         const payload = { id, kind: 'room', roomId: rid, text: v };
-        if (v.trim()) {
-            GoogleSheets.queueSave?.({ type: 'upsertHint', id, data: payload });
-        } else {
-            GoogleSheets.queueSave?.({ type: 'deleteHint', id });
-        }
+        // NOTE:
+        // - 기존 queueSave(600ms 디바운스)만 쓰면, 사용자가 바로 새로고침/다른 브라우저 pull이 먼저 오면서
+        //   "서버엔 아직 없음 → 로컬이 덮여서 사라짐" 체감이 생길 수 있습니다.
+        // - 기본 배정/워터마크는 공유가 목적이므로 즉시 서버에 반영(업서트/삭제)합니다.
+        (async () => {
+            try {
+                if (GoogleSheets.isReady?.()) {
+                    const url = GoogleSheets.config.webAppUrl;
+                    const res = v.trim()
+                        ? await GoogleSheets.upsertHint(url, payload)
+                        : await GoogleSheets.deleteHint(url, id);
+                    const ver = res?.meta?.version || '';
+                    if (ver && GoogleSheets._setLastVersion) GoogleSheets._setLastVersion(ver);
+                } else {
+                    // 서버 준비가 안 된 경우엔 로컬에만 남김
+                }
+            } catch (err) {
+                console.error('hint sync failed:', err);
+            }
+        })();
     }
 }
 
@@ -187,11 +202,20 @@ function setBaseCellHint_(roomId, dayIndex, slotId, text) {
         const sid = normalizePeriodKey_(slotId);
         const id = `hint-cell:${rid}:${d}:${sid}`;
         const payload = { id, kind: 'cell', roomId: rid, dayIndex: d, slotId: sid, text: v };
-        if (v.trim()) {
-            GoogleSheets.queueSave?.({ type: 'upsertHint', id, data: payload });
-        } else {
-            GoogleSheets.queueSave?.({ type: 'deleteHint', id });
-        }
+        (async () => {
+            try {
+                if (GoogleSheets.isReady?.()) {
+                    const url = GoogleSheets.config.webAppUrl;
+                    const res = v.trim()
+                        ? await GoogleSheets.upsertHint(url, payload)
+                        : await GoogleSheets.deleteHint(url, id);
+                    const ver = res?.meta?.version || '';
+                    if (ver && GoogleSheets._setLastVersion) GoogleSheets._setLastVersion(ver);
+                }
+            } catch (err) {
+                console.error('base cell hint sync failed:', err);
+            }
+        })();
     }
 }
 
@@ -577,6 +601,10 @@ function init() {
             // 힌트(기본 배정/워터마크) 반영: 여러 PC/브라우저 공유
             if (typeof window !== 'undefined' && typeof window.AppHints?.applyHintsFromServer === 'function') {
                 window.AppHints.applyHintsFromServer(remoteHints);
+            }
+            // 현재 선택된 방의 우측 제목 워터마크 즉시 갱신(서버 pull로 반영된 힌트가 바로 보이게)
+            if (elements.scheduleTitleHint && AppState.currentRoomId) {
+                elements.scheduleTitleHint.textContent = String(getRoomHint_(AppState.currentRoomId) || '');
             }
             // 최종적으로 고정방 강제 + 이름 중복 방 정리 + 예약 roomId 마이그레이션
             Storage.ensureFixedRooms?.();
