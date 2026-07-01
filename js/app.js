@@ -354,6 +354,9 @@ const elements = {
     reservationName: document.getElementById('reservationName'),
     reservationClass: document.getElementById('reservationClass'),
     reservationPurpose: document.getElementById('reservationPurpose'),
+    repeatOptions: document.getElementById('repeatOptions'),
+    consecutiveSlotsList: document.getElementById('consecutiveSlotsList'),
+    reservationRepeatWeeks: document.getElementById('reservationRepeatWeeks'),
     deleteReservationBtn: document.getElementById('deleteReservationBtn'),
     cancelModalBtn: document.getElementById('cancelModalBtn'),
     cancelRoomModalBtn: document.getElementById('cancelRoomModalBtn'),
@@ -1156,11 +1159,40 @@ function renderSchedule() {
 }
 
 /**
+ * "연속 교시" 체크박스 목록을 채웁니다.
+ * - 같은 날의 다른 슬롯(점심 제외, 시작 슬롯 제외)을 보여주고, 체크된 것만 함께 예약합니다.
+ * - 4/5교시처럼 학교급별로 갈라지는 슬롯도 그대로 보여줘서 교사가 자기 학급에 맞는 슬롯을 직접 고르게 합니다.
+ */
+function renderConsecutiveSlotOptions_(startSlotId) {
+    if (!elements.consecutiveSlotsList) return;
+    elements.consecutiveSlotsList.innerHTML = '';
+    const startKey = normalizePeriodKey_(startSlotId);
+
+    SCHEDULE_SLOTS.forEach(slot => {
+        if (slot.id === startKey) return;
+        if (slot.id.startsWith('LUNCH_')) return;
+
+        const label = document.createElement('label');
+        label.className = 'inline-flex items-center gap-1 px-2 py-1 border rounded text-xs cursor-pointer';
+        label.innerHTML = `
+            <input type="checkbox" value="${escapeHtml(slot.id)}" class="consecutive-slot-checkbox">
+            <span>${escapeHtml(slot.label)}</span>
+        `;
+        elements.consecutiveSlotsList.appendChild(label);
+    });
+}
+
+function getSelectedConsecutiveSlotIds_() {
+    if (!elements.consecutiveSlotsList) return [];
+    return Array.from(elements.consecutiveSlotsList.querySelectorAll('.consecutive-slot-checkbox:checked')).map(el => el.value);
+}
+
+/**
  * 예약 모달 표시
  */
 function showReservationModal(reservation, date = null, period = null, roomId = null) {
     if (reservation) {
-        // 수정 모드
+        // 수정 모드: 연속/반복 설정은 새 예약 생성 시에만 의미가 있으므로 숨김
         elements.modalTitle.textContent = '예약 수정';
         elements.reservationId.value = reservation.id;
         elements.reservationDate.value = reservation.date;
@@ -1170,6 +1202,7 @@ function showReservationModal(reservation, date = null, period = null, roomId = 
         elements.reservationClass.value = reservation.class || '';
         elements.reservationPurpose.value = reservation.purpose || '';
         elements.deleteReservationBtn.classList.remove('hidden');
+        if (elements.repeatOptions) elements.repeatOptions.classList.add('hidden');
     } else {
         // 생성 모드
         elements.modalTitle.textContent = '예약하기';
@@ -1182,8 +1215,11 @@ function showReservationModal(reservation, date = null, period = null, roomId = 
         elements.reservationClass.value = '';
         elements.reservationPurpose.value = '';
         elements.deleteReservationBtn.classList.add('hidden');
+        if (elements.repeatOptions) elements.repeatOptions.classList.remove('hidden');
+        if (elements.reservationRepeatWeeks) elements.reservationRepeatWeeks.value = '1';
+        renderConsecutiveSlotOptions_(period);
     }
-    
+
     elements.reservationModal.classList.add('show');
 }
 
@@ -1197,29 +1233,52 @@ function hideReservationModal() {
 }
 
 /**
+ * 연속/반복 예약을 포함해 실제로 예약을 생성해야 할 (date, slotId) 목록을 계산합니다.
+ * @returns {{date:string, period:string}[]}
+ */
+function buildRepeatTargets_(baseDate, basePeriod) {
+    const slotIds = [basePeriod, ...getSelectedConsecutiveSlotIds_()];
+
+    let weeks = parseInt(elements.reservationRepeatWeeks?.value, 10);
+    if (!Number.isFinite(weeks) || weeks < 1) weeks = 1;
+    weeks = Math.min(weeks, 20);
+
+    const targets = [];
+    for (let w = 0; w < weeks; w++) {
+        const d = w === 0 ? parseDateISO(baseDate) : addWeeks(parseDateISO(baseDate), w);
+        const dateStr = formatDateISO(d);
+        for (const slotId of slotIds) {
+            targets.push({ date: dateStr, period: slotId });
+        }
+    }
+    return targets;
+}
+
+/**
  * 예약 제출 처리
  */
 function handleReservationSubmit(e) {
     e.preventDefault();
-    
+
     const reservationId = elements.reservationId.value;
-    const reservationData = {
-        roomId: elements.reservationRoomId.value,
-        date: elements.reservationDate.value,
-        // 확장 슬롯 지원(예: "4E", "LUNCH_M")
-        period: elements.reservationPeriod.value,
-        name: elements.reservationName.value.trim(),
-        class: elements.reservationClass.value.trim(),
-        purpose: elements.reservationPurpose.value.trim(),
-        status: 'default'
-    };
-    
+    const roomId = elements.reservationRoomId.value;
+    const name = elements.reservationName.value.trim();
+    const klass = elements.reservationClass.value.trim();
+    const purpose = elements.reservationPurpose.value.trim();
+
     if (reservationId) {
         // 수정은 공통 비밀번호 확인 필요 (우회 방지)
         if (authorizedReservationId !== reservationId) {
             if (!requireCommonPassword('예약을 수정')) return;
             authorizedReservationId = reservationId;
         }
+        const reservationData = {
+            roomId,
+            date: elements.reservationDate.value,
+            period: elements.reservationPeriod.value,
+            name, class: klass, purpose,
+            status: 'default'
+        };
         // 수정
         const updated = Storage.updateReservation(reservationId, reservationData);
         // 서버 반영(자동)
@@ -1227,14 +1286,34 @@ function handleReservationSubmit(e) {
             SupabaseSync.queueSave?.({ type: 'upsertReservation', id: updated.id, data: updated });
         }
     } else {
-        // 생성
-        const created = Storage.addReservation(reservationData);
-        // 서버 반영(자동)
-        if (typeof SupabaseSync !== 'undefined' && created) {
-            SupabaseSync.queueSave?.({ type: 'upsertReservation', id: created.id, data: created });
+        // 생성(연속 교시/매주 반복 선택 시 여러 건을 한 번에 생성)
+        const targets = buildRepeatTargets_(elements.reservationDate.value, elements.reservationPeriod.value);
+        let createdCount = 0;
+        const skipped = [];
+
+        for (const t of targets) {
+            const existing = getReservationForSlot_(roomId, t.date, t.period);
+            if (existing) {
+                skipped.push(t);
+                continue;
+            }
+            const created = Storage.addReservation({ roomId, date: t.date, period: t.period, name, class: klass, purpose, status: 'default' });
+            if (typeof SupabaseSync !== 'undefined' && created) {
+                SupabaseSync.queueSave?.({ type: 'upsertReservation', id: created.id, data: created });
+            }
+            createdCount++;
+        }
+
+        if (targets.length > 1) {
+            let msg = `${createdCount}건 예약 완료`;
+            if (skipped.length > 0) {
+                const preview = skipped.slice(0, 5).map(t => `${t.date} ${getSlotMeta_(t.period).label}`).join(', ');
+                msg += `\n이미 예약되어 건너뜀: ${skipped.length}건${preview ? ` (${preview}${skipped.length > 5 ? ' 외' : ''})` : ''}`;
+            }
+            alert(msg);
         }
     }
-    
+
     loadReservations();
     renderSchedule();
     hideReservationModal();
