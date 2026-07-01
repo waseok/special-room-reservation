@@ -105,14 +105,3 @@ function formatWeekRange(date) {
     return `${year}년 ${startMonth}.${startDay}~${endMonth}.${endDay}`;
 }
 
-/**
- * 주 범위를 드롭다운 옵션용 문자열로 포맷팅합니다.
- * @param {Date} date - 기준 날짜
- * @returns {string} 포맷팅된 문자열
- */
-function formatWeekRangeForSelect(date) {
-    const start = getWeekStart(date);
-    const end = getWeekEnd(date);
-    return formatWeekRange(date);
-}
-

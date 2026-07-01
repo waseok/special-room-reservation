@@ -109,33 +109,3 @@
     text-align: right;
 }
 
-/* 상태 아이콘 스타일 */
-.status-icon {
-    display: inline-block;
-    margin-right: 4px;
-    font-size: 0.875rem;
-}
-
-.status-icon.confirmed::before {
-    content: "●";
-    color: black;
-}
-
-.status-icon.default::before {
-    content: "◆";
-    color: #6b7280;
-}
-
-.status-icon.waiting::before {
-    content: "◎";
-    color: #9ca3af;
-    border: 1px solid #9ca3af;
-    border-radius: 50%;
-    width: 1em;
-    height: 1em;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.75em;
-}
-

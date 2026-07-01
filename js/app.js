@@ -1048,11 +1048,20 @@ function renderSchedule() {
             cell.addEventListener('drop', (e) => {
                 e.preventDefault();
                 cell.classList.remove('drag-over');
-                
+
                 if (AppState.draggedRoom) {
-                    // 드롭한 위치의 시간으로 예약 모달 열기
-                    showReservationModal(null, dateStr, slotId, AppState.draggedRoom.id);
+                    const targetRoomId = AppState.draggedRoom.id;
                     AppState.draggedRoom = null;
+
+                    // 드롭 대상 특별실에 이미 같은 시간 예약이 있으면 중복 생성 대신 수정 모달로 안내
+                    const existing = getReservationForSlot_(targetRoomId, dateStr, slotId);
+                    if (existing) {
+                        if (!requireCommonPassword('예약을 수정/삭제')) return;
+                        authorizedReservationId = existing.id;
+                        showReservationModal(existing);
+                    } else {
+                        showReservationModal(null, dateStr, slotId, targetRoomId);
+                    }
                 }
             });
             
