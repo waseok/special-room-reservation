@@ -47,8 +47,6 @@
     </p>
 </div>
 
-<script src="js/utils.js"></script>
-<script src="js/storage.js"></script>
 <script>
 let exported = null; // { rooms, reservations, hints } (정규화 완료 상태)
 
@@ -56,6 +54,77 @@ const logEl = document.getElementById('log');
 function log(msg) {
     logEl.textContent += msg + '\n';
     logEl.scrollTop = logEl.scrollHeight;
+}
+
+// ---- js/storage.js의 정규화 로직을 이 파일 하나로 완결되게 그대로 옮겨온 것 ----
+// (별도 <script src="js/..."> 의존 없이 동작하도록: 외부 파일이 404가 나면 브라우저 내장
+//  전역 `Storage`(로컬스토리지 인터페이스)가 대신 잡혀 `_normalizeRoom is not a function` 같은
+//  혼란스러운 에러가 나기 때문에, 아예 별도 이름의 함수로 인라인합니다.)
+function genId_(prefix) {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return `${prefix}-${crypto.randomUUID()}`;
+    }
+    return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function formatDateISO_(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+function normalizePeriodKey_(value) {
+    if (value == null) return '';
+    const s = String(value).trim();
+    if (!s) return '';
+    const n = Number(s);
+    if (Number.isFinite(n) && String(n) === String(parseInt(String(n), 10))) return String(n);
+    return s;
+}
+
+function normalizeDateISO_(value) {
+    if (value == null) return '';
+    if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime?.())) {
+        try { return formatDateISO_(value); } catch (_) { /* fallthrough */ }
+    }
+    const s = String(value).trim();
+    if (!s) return '';
+    if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
+        const d = new Date(s);
+        return !isNaN(d.getTime()) ? formatDateISO_(d) : s.slice(0, 10);
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    if (/[A-Za-z]{3}\s+[A-Za-z]{3}\s+\d{1,2}\s+\d{4}/.test(s) || /GMT[+-]\d{4}/.test(s)) {
+        const d = new Date(s);
+        if (!isNaN(d.getTime())) return formatDateISO_(d);
+    }
+    const m = s.match(/^(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})$/);
+    if (m) return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
+    return s;
+}
+
+function normalizeRoom_(room) {
+    if (!room) return null;
+    const out = { ...room };
+    out.id = String(out.id || '').trim() || genId_('room');
+    if (out.name != null) out.name = String(out.name).trim();
+    return out;
+}
+
+function normalizeReservation_(resv) {
+    if (!resv) return null;
+    const out = { ...resv };
+    out.id = String(out.id || '').trim() || genId_('reservation');
+    if (!out.roomId && out.roomID) out.roomId = out.roomID;
+    out.roomId = String(out.roomId || '').trim();
+    out.date = normalizeDateISO_(out.date);
+    out.period = normalizePeriodKey_(out.period);
+    if (out.name != null) out.name = String(out.name).trim();
+    if (out.class != null) out.class = String(out.class).trim();
+    if (out.purpose != null) out.purpose = String(out.purpose).trim();
+    if (!out.createdAt && out.createAt) out.createdAt = out.createAt;
+    return out;
 }
 
 function normalizeHint(h) {
@@ -116,8 +185,8 @@ document.getElementById('step1Btn').addEventListener('click', async () => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
 
-        const rooms = (data.rooms || []).map(r => Storage._normalizeRoom(r)).filter(Boolean);
-        let reservations = (data.reservations || []).map(r => Storage._normalizeReservation(r)).filter(Boolean);
+        const rooms = (data.rooms || []).map(r => normalizeRoom_(r)).filter(Boolean);
+        let reservations = (data.reservations || []).map(r => normalizeReservation_(r)).filter(Boolean);
         const hints = (data.hints || []).map(normalizeHint).filter(Boolean);
 
         reservations = dedupeReservations(reservations);
