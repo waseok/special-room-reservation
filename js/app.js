@@ -967,6 +967,37 @@ function updateWeekSelector() {
 /**
  * 시간표 렌더링
  */
+// 6교시 이후(7~10교시)는 실사용 빈도가 낮아 기본적으로 접어둡니다.
+const EXTRA_PERIOD_IDS = ['7', '8', '9', '10'];
+const EXTRA_PERIODS_EXPANDED_KEY = 'extraPeriodsExpanded';
+
+function isExtraPeriodsExpanded_() {
+    try {
+        return localStorage.getItem(EXTRA_PERIODS_EXPANDED_KEY) === '1';
+    } catch (_) {
+        return false;
+    }
+}
+
+function setExtraPeriodsExpanded_(expanded) {
+    try {
+        localStorage.setItem(EXTRA_PERIODS_EXPANDED_KEY, expanded ? '1' : '0');
+    } catch (_) {
+        // ignore
+    }
+}
+
+function countExtraPeriodReservations_(roomId, weekDays) {
+    let count = 0;
+    for (const day of weekDays) {
+        const dateStr = formatDateISO(day);
+        for (const slotId of EXTRA_PERIOD_IDS) {
+            if (getReservationForSlot_(roomId, dateStr, slotId)) count++;
+        }
+    }
+    return count;
+}
+
 function renderSchedule() {
     if (!AppState.currentRoomId) {
         if (elements.scheduleTitleText) elements.scheduleTitleText.textContent = '특별실을 선택하세요';
@@ -974,22 +1005,28 @@ function renderSchedule() {
         elements.scheduleBody.innerHTML = '<tr><td colspan="6" class="text-center p-8 text-gray-500">특별실을 선택해주세요</td></tr>';
         return;
     }
-    
+
     const weekDays = getWeekDays(AppState.currentWeek);
-    
+
     // 요일 헤더 업데이트
     const dayNames = ['월', '화', '수', '목', '금'];
     const headers = [elements.monday, elements.tuesday, elements.wednesday, elements.thursday, elements.friday];
-    
+
     weekDays.forEach((day, index) => {
         headers[index].textContent = `${dayNames[index]} (${formatDate(day)})`;
     });
-    
+
     // 시간표 본문 생성
     elements.scheduleBody.innerHTML = '';
-    
+
+    const expanded = isExtraPeriodsExpanded_();
+
     for (const slot of SCHEDULE_SLOTS) {
         const slotId = slot.id;
+
+        if (EXTRA_PERIOD_IDS.includes(slotId) && !expanded) {
+            continue; // 접힌 상태: 개별 행 대신 아래 토글 행 하나로 대체
+        }
         const row = document.createElement('tr');
         
         // 교시 번호 셀
@@ -1092,9 +1129,30 @@ function renderSchedule() {
             
             row.appendChild(cell);
         });
-        
+
         elements.scheduleBody.appendChild(row);
     }
+
+    // 6교시 이후 펼치기/접기 토글 행
+    const toggleRow = document.createElement('tr');
+    const toggleCell = document.createElement('td');
+    toggleCell.colSpan = 6;
+    toggleCell.className = 'border p-2 text-center extra-periods-toggle';
+
+    if (expanded) {
+        toggleCell.textContent = '▲ 6교시 이후 접기';
+    } else {
+        const hiddenCount = countExtraPeriodReservations_(AppState.currentRoomId, weekDays);
+        toggleCell.textContent = hiddenCount > 0
+            ? `▼ 6교시 이후 펼치기 (숨겨진 예약 ${hiddenCount}건)`
+            : '▼ 6교시 이후 펼치기';
+    }
+    toggleCell.addEventListener('click', () => {
+        setExtraPeriodsExpanded_(!expanded);
+        renderSchedule();
+    });
+    toggleRow.appendChild(toggleCell);
+    elements.scheduleBody.appendChild(toggleRow);
 }
 
 /**
