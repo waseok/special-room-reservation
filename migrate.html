@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>구글시트 → Supabase 1회성 데이터 이관</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body class="bg-gray-50 p-6">
+<div class="max-w-2xl mx-auto bg-white rounded-lg shadow p-6">
+    <h1 class="text-xl font-bold mb-2">구글시트(Apps Script) → Supabase 데이터 이관</h1>
+    <p class="text-sm text-gray-600 mb-4">
+        이 페이지는 <b>한 번만</b> 쓰는 도구입니다. 이관이 끝나면 이 파일은 지워도 됩니다.<br>
+        아래 값이 기본으로 채워져 있으면 그대로 "1) 구글시트에서 불러오기" → "2) Supabase로 밀어넣기" 순서로 누르면 됩니다.
+    </p>
+
+    <div class="mb-3">
+        <label class="block text-sm font-medium mb-1">Apps Script Web App URL (구글시트 export)</label>
+        <input id="webAppUrl" class="w-full px-3 py-2 border rounded text-sm"
+               value="https://script.google.com/macros/s/AKfycbwBbZXA1WgbyKygN0of6t0qPohOYbSmiITbtCO_61sBMYzjOfiFwDXT4Iz-tfE0wOYF/exec"
+               placeholder="https://script.google.com/macros/s/.../exec">
+    </div>
+    <div class="mb-3">
+        <label class="block text-sm font-medium mb-1">Supabase Project URL</label>
+        <input id="sbUrl" class="w-full px-3 py-2 border rounded text-sm" value="https://ewvwlowxgtnnmlvzblxt.supabase.co">
+    </div>
+    <div class="mb-4">
+        <label class="block text-sm font-medium mb-1">Supabase Publishable(anon) key</label>
+        <input id="sbKey" class="w-full px-3 py-2 border rounded text-sm" value="sb_publishable_XhhGg5y5hv1xRXGImMCjgg_9mJpaSnB">
+    </div>
+
+    <div class="flex gap-2 mb-4">
+        <button id="step1Btn" class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm">
+            1) 구글시트에서 불러오기
+        </button>
+        <button id="step2Btn" class="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-sm" disabled>
+            2) Supabase로 밀어넣기
+        </button>
+    </div>
+
+    <pre id="log" class="text-xs bg-gray-900 text-gray-100 rounded p-3 h-80 overflow-y-auto whitespace-pre-wrap"></pre>
+
+    <p class="text-xs text-gray-500 mt-3">
+        참고: Supabase에 먼저 <code>supabase/schema.sql</code>을 SQL Editor에서 실행해서 테이블을 만들어둔 상태여야 합니다.<br>
+        이 파일을 더블클릭(file://)으로 열었을 때 요청이 막히면, 터미널에서 <code>python3 -m http.server</code> 실행 후
+        <code>http://localhost:8000/migrate.html</code>로 열어보세요.
+    </p>
+</div>
+
+<script>
+let exported = null; // { rooms, reservations, hints } (정규화 완료 상태)
+
+const logEl = document.getElementById('log');
+function log(msg) {
+    logEl.textContent += msg + '\n';
+    logEl.scrollTop = logEl.scrollHeight;
+}
+
+// ---- js/storage.js의 정규화 로직을 이 파일 하나로 완결되게 그대로 옮겨온 것 ----
+// (별도 <script src="js/..."> 의존 없이 동작하도록: 외부 파일이 404가 나면 브라우저 내장
+//  전역 `Storage`(로컬스토리지 인터페이스)가 대신 잡혀 `_normalizeRoom is not a function` 같은
+//  혼란스러운 에러가 나기 때문에, 아예 별도 이름의 함수로 인라인합니다.)
+function genId_(prefix) {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return `${prefix}-${crypto.randomUUID()}`;
+    }
+    return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function formatDateISO_(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+function normalizePeriodKey_(value) {
+    if (value == null) return '';
+    const s = String(value).trim();
+    if (!s) return '';
+    const n = Number(s);
+    if (Number.isFinite(n) && String(n) === String(parseInt(String(n), 10))) return String(n);
+    return s;
+}
+
+function normalizeDateISO_(value) {
+    if (value == null) return '';
+    if (Object.prototype.toString.call(value) === '[object Date]' && !isNaN(value.getTime?.())) {
+        try { return formatDateISO_(value); } catch (_) { /* fallthrough */ }
+    }
+    const s = String(value).trim();
+    if (!s) return '';
+    if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
+        const d = new Date(s);
+        return !isNaN(d.getTime()) ? formatDateISO_(d) : s.slice(0, 10);
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    if (/[A-Za-z]{3}\s+[A-Za-z]{3}\s+\d{1,2}\s+\d{4}/.test(s) || /GMT[+-]\d{4}/.test(s)) {
+        const d = new Date(s);
+        if (!isNaN(d.getTime())) return formatDateISO_(d);
+    }
+    const m = s.match(/^(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})$/);
+    if (m) return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
+    return s;
+}
+
+function normalizeRoom_(room) {
+    if (!room) return null;
+    const out = { ...room };
+    out.id = String(out.id || '').trim() || genId_('room');
+    if (out.name != null) out.name = String(out.name).trim();
+    return out;
+}
+
+function normalizeReservation_(resv) {
+    if (!resv) return null;
+    const out = { ...resv };
+    out.id = String(out.id || '').trim() || genId_('reservation');
+    if (!out.roomId && out.roomID) out.roomId = out.roomID;
+    out.roomId = String(out.roomId || '').trim();
+    out.date = normalizeDateISO_(out.date);
+    out.period = normalizePeriodKey_(out.period);
+    if (out.name != null) out.name = String(out.name).trim();
+    if (out.class != null) out.class = String(out.class).trim();
+    if (out.purpose != null) out.purpose = String(out.purpose).trim();
+    if (!out.createdAt && out.createAt) out.createdAt = out.createAt;
+    return out;
+}
+
+function normalizeHint(h) {
+    if (!h) return null;
+    const out = { ...h };
+    out.id = String(out.id || '').trim();
+    out.kind = String(out.kind || '').trim();
+    if (!out.roomId && out.roomID) out.roomId = out.roomID;
+    out.roomId = String(out.roomId || '').trim();
+    out.text = String(out.text ?? '');
+    if (out.kind === 'cell') {
+        out.dayIndex = Number(out.dayIndex);
+        out.slotId = String(out.slotId ?? '').trim();
+    }
+    if (!out.id || !out.roomId || !out.text.trim()) return null;
+    return out;
+}
+
+// app.js와 동일한 기준: 같은 room/date/period가 여러 개면 "더 완전한 데이터 > 최신 timestamp" 우선으로 하나만 남깁니다.
+// (UNIQUE 제약(room_id,date,period) 위반으로 이관이 중간에 실패하는 것을 막기 위함)
+function dedupeReservations(list) {
+    const quality = (r) => {
+        let q = 0;
+        if (r.roomId) q++;
+        if (r.date) q++;
+        if (r.period != null && String(r.period).trim()) q++;
+        if (r.name != null && String(r.name).trim()) q++;
+        return q;
+    };
+    const ts = (r) => String(r.updatedAt || r.createdAt || '').trim();
+
+    const bySlot = new Map();
+    let skipped = 0;
+    for (const r of list) {
+        const key = `${r.roomId}|${r.date}|${r.period}`;
+        const prev = bySlot.get(key);
+        if (!prev) {
+            bySlot.set(key, r);
+            continue;
+        }
+        skipped++;
+        const qr = quality(r), qp = quality(prev);
+        if (qr > qp || (qr === qp && ts(r) >= ts(prev))) {
+            bySlot.set(key, r);
+        }
+    }
+    if (skipped) log(`  - 같은 방/날짜/교시 중복 ${skipped}건은 더 완전하거나 최신인 쪽만 남기고 건너뜁니다.`);
+    return Array.from(bySlot.values());
+}
+
+document.getElementById('step1Btn').addEventListener('click', async () => {
+    const webAppUrl = document.getElementById('webAppUrl').value.trim();
+    if (!webAppUrl) { alert('Apps Script Web App URL을 입력하세요.'); return; }
+
+    log('구글시트에서 불러오는 중...');
+    try {
+        const res = await fetch(`${webAppUrl}?action=export`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        const rooms = (data.rooms || []).map(r => normalizeRoom_(r)).filter(Boolean);
+        let reservations = (data.reservations || []).map(r => normalizeReservation_(r)).filter(Boolean);
+        const hints = (data.hints || []).map(normalizeHint).filter(Boolean);
+
+        reservations = dedupeReservations(reservations);
+
+        exported = { rooms, reservations, hints };
+        log(`완료: rooms=${rooms.length}개, reservations=${reservations.length}개, hints=${hints.length}개`);
+        document.getElementById('step2Btn').disabled = false;
+    } catch (err) {
+        console.error(err);
+        log('실패: ' + (err?.message || err));
+    }
+});
+
+document.getElementById('step2Btn').addEventListener('click', async () => {
+    if (!exported) { alert('먼저 1)을 실행하세요.'); return; }
+    const sbUrl = document.getElementById('sbUrl').value.trim();
+    const sbKey = document.getElementById('sbKey').value.trim();
+    if (!sbUrl || !sbKey) { alert('Supabase URL/key를 입력하세요.'); return; }
+
+    const client = window.supabase.createClient(sbUrl, sbKey);
+    log('Supabase로 올리는 중...');
+
+    try {
+        if (exported.rooms.length) {
+            const rows = exported.rooms.map(r => ({ id: r.id, name: r.name }));
+            const { error } = await client.from('rooms').upsert(rows);
+            if (error) throw error;
+            log(`rooms 완료: ${rows.length}개`);
+        }
+
+        if (exported.reservations.length) {
+            const rows = exported.reservations.map(r => ({
+                id: r.id, room_id: r.roomId, date: r.date, period: String(r.period ?? ''),
+                name: r.name || '', class: r.class || '', purpose: r.purpose || ''
+            }));
+            const { error } = await client.from('reservations').upsert(rows);
+            if (error) throw error;
+            log(`reservations 완료: ${rows.length}개`);
+        }
+
+        if (exported.hints.length) {
+            const rows = exported.hints.map(h => ({
+                id: h.id, kind: h.kind, room_id: h.roomId,
+                day_index: h.kind === 'cell' ? h.dayIndex : null,
+                slot_id: h.kind === 'cell' ? h.slotId : null,
+                text: h.text
+            }));
+            const { error } = await client.from('hints').upsert(rows);
+            if (error) throw error;
+            log(`hints 완료: ${rows.length}개`);
+        }
+
+        log('전체 이관 완료! index.html에서 정상적으로 보이는지 확인해보세요.');
+    } catch (err) {
+        console.error(err);
+        log('실패: ' + (err?.message || err));
+    }
+});
+</script>
+</body>
+</html>

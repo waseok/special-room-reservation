@@ -118,22 +118,21 @@ function setRoomHint_(roomId, text) {
     localStorage.setItem(ROOM_HINTS_STORAGE_KEY, JSON.stringify(obj));
 
     // 서버 공유(여러 PC/브라우저)
-    if (typeof GoogleSheets !== 'undefined') {
+    if (typeof SupabaseSync !== 'undefined') {
         const id = `hint-room:${rid}`;
         const payload = { id, kind: 'room', roomId: rid, text: v };
         // NOTE:
-        // - 기존 queueSave(600ms 디바운스)만 쓰면, 사용자가 바로 새로고침/다른 브라우저 pull이 먼저 오면서
+        // - 기존 queueSave(디바운스)만 쓰면, 사용자가 바로 새로고침/다른 브라우저 pull이 먼저 오면서
         //   "서버엔 아직 없음 → 로컬이 덮여서 사라짐" 체감이 생길 수 있습니다.
         // - 기본 배정/워터마크는 공유가 목적이므로 즉시 서버에 반영(업서트/삭제)합니다.
         (async () => {
             try {
-                if (GoogleSheets.isReady?.()) {
-                    const url = GoogleSheets.config.webAppUrl;
-                    const res = v.trim()
-                        ? await GoogleSheets.upsertHint(url, payload)
-                        : await GoogleSheets.deleteHint(url, id);
-                    const ver = res?.meta?.version || '';
-                    if (ver && GoogleSheets._setLastVersion) GoogleSheets._setLastVersion(ver);
+                if (SupabaseSync.isReady?.()) {
+                    if (v.trim()) {
+                        await SupabaseSync.upsertHint(payload);
+                    } else {
+                        await SupabaseSync.deleteHint(id);
+                    }
                 } else {
                     // 서버 준비가 안 된 경우엔 로컬에만 남김
                 }
@@ -198,19 +197,18 @@ function setBaseCellHint_(roomId, dayIndex, slotId, text) {
     _saveBaseCellHints_(all);
 
     // 서버 공유(여러 PC/브라우저)
-    if (typeof GoogleSheets !== 'undefined') {
+    if (typeof SupabaseSync !== 'undefined') {
         const sid = normalizePeriodKey_(slotId);
         const id = `hint-cell:${rid}:${d}:${sid}`;
         const payload = { id, kind: 'cell', roomId: rid, dayIndex: d, slotId: sid, text: v };
         (async () => {
             try {
-                if (GoogleSheets.isReady?.()) {
-                    const url = GoogleSheets.config.webAppUrl;
-                    const res = v.trim()
-                        ? await GoogleSheets.upsertHint(url, payload)
-                        : await GoogleSheets.deleteHint(url, id);
-                    const ver = res?.meta?.version || '';
-                    if (ver && GoogleSheets._setLastVersion) GoogleSheets._setLastVersion(ver);
+                if (SupabaseSync.isReady?.()) {
+                    if (v.trim()) {
+                        await SupabaseSync.upsertHint(payload);
+                    } else {
+                        await SupabaseSync.deleteHint(id);
+                    }
                 }
             } catch (err) {
                 console.error('base cell hint sync failed:', err);
@@ -220,7 +218,7 @@ function setBaseCellHint_(roomId, dayIndex, slotId, text) {
 }
 
 /**
- * GoogleSheets.js가 힌트를 export/import 할 수 있도록 window에 유틸을 노출합니다.
+ * SupabaseSync.js가 힌트를 export/import 할 수 있도록 window에 유틸을 노출합니다.
  * - exportAllHints(): 로컬(roomHintById + roomBaseCellHints)을 서버 형식 배열로 변환
  * - applyHintsFromServer(hints): 서버 배열을 로컬 스토리지로 반영
  */
@@ -321,7 +319,7 @@ const elements = {
     weekSelector: document.getElementById('weekSelector'),
     goTodayBtn: document.getElementById('goToday'),
     viewMyReservationsBtn: document.getElementById('viewMyReservations'),
-    googleSheetsConfigBtn: document.getElementById('googleSheetsConfigBtn'),
+    serverConfigBtn: document.getElementById('serverConfigBtn'),
     syncToSheetsBtn: document.getElementById('syncToSheetsBtn'),
     syncFromSheetsBtn: document.getElementById('syncFromSheetsBtn'),
     
@@ -441,8 +439,8 @@ function init() {
     }
 
     // 서버 자동 동기화: 원격 데이터 적용 핸들러 등록 + 시작
-    if (typeof GoogleSheets !== 'undefined') {
-        GoogleSheets.setApplyRemote(async ({ rooms, reservations, hints }) => {
+    if (typeof SupabaseSync !== 'undefined') {
+        SupabaseSync.setApplyRemote(async ({ rooms, reservations, hints }) => {
             // 서버 데이터 적용: \"그냥 덮어쓰기\"는 위험합니다.
             // - Sheets/Apps Script 특성상 date/period 타입이 흔들리거나
             // - 헤더/빈값 때문에 원격 객체가 불완전하게 내려오면
@@ -626,7 +624,7 @@ function init() {
                 renderSchedule();
             }
         });
-        GoogleSheets.startAutoSync?.();
+        SupabaseSync.startAutoSync?.();
     }
 }
 
@@ -688,23 +686,23 @@ function setupEventListeners() {
     elements.viewMyReservationsBtn.addEventListener('click', showMyReservations);
     
     // 구글 스프레드시트 설정
-    if (elements.googleSheetsConfigBtn) {
+    if (elements.serverConfigBtn) {
         // 서버 URL이 고정(잠금)이어도, 자동 저장/자동 불러오기 같은 옵션은 현장에서 조절할 수 있게
         // 설정 모달은 계속 열리도록 둡니다. (URL/연동 on/off는 모달에서 비활성화됨)
-        elements.googleSheetsConfigBtn.addEventListener('click', () => {
-            GoogleSheets.showConfigModal();
+        elements.serverConfigBtn.addEventListener('click', () => {
+            SupabaseSync.showConfigModal();
         });
     }
     
     // 구글 스프레드시트 동기화
     elements.syncToSheetsBtn.addEventListener('click', () => {
-        GoogleSheets.syncToSheets();
+        SupabaseSync.syncToSheets();
     });
 
     // 구글 스프레드시트에서 불러오기
     if (elements.syncFromSheetsBtn) {
         elements.syncFromSheetsBtn.addEventListener('click', () => {
-            GoogleSheets.syncFromSheets();
+            SupabaseSync.syncFromSheets();
         });
     }
     
@@ -930,8 +928,8 @@ function deleteRoom(roomId) {
     }
 
     // 서버 반영(자동)
-    if (typeof GoogleSheets !== 'undefined') {
-        GoogleSheets.queueSave?.({ type: 'deleteRoom', id: roomId });
+    if (typeof SupabaseSync !== 'undefined') {
+        SupabaseSync.queueSave?.({ type: 'deleteRoom', id: roomId });
     }
 }
 
@@ -1048,11 +1046,20 @@ function renderSchedule() {
             cell.addEventListener('drop', (e) => {
                 e.preventDefault();
                 cell.classList.remove('drag-over');
-                
+
                 if (AppState.draggedRoom) {
-                    // 드롭한 위치의 시간으로 예약 모달 열기
-                    showReservationModal(null, dateStr, slotId, AppState.draggedRoom.id);
+                    const targetRoomId = AppState.draggedRoom.id;
                     AppState.draggedRoom = null;
+
+                    // 드롭 대상 특별실에 이미 같은 시간 예약이 있으면 중복 생성 대신 수정 모달로 안내
+                    const existing = getReservationForSlot_(targetRoomId, dateStr, slotId);
+                    if (existing) {
+                        if (!requireCommonPassword('예약을 수정/삭제')) return;
+                        authorizedReservationId = existing.id;
+                        showReservationModal(existing);
+                    } else {
+                        showReservationModal(null, dateStr, slotId, targetRoomId);
+                    }
                 }
             });
             
@@ -1158,15 +1165,15 @@ function handleReservationSubmit(e) {
         // 수정
         const updated = Storage.updateReservation(reservationId, reservationData);
         // 서버 반영(자동)
-        if (typeof GoogleSheets !== 'undefined' && updated) {
-            GoogleSheets.queueSave?.({ type: 'upsertReservation', id: updated.id, data: updated });
+        if (typeof SupabaseSync !== 'undefined' && updated) {
+            SupabaseSync.queueSave?.({ type: 'upsertReservation', id: updated.id, data: updated });
         }
     } else {
         // 생성
         const created = Storage.addReservation(reservationData);
         // 서버 반영(자동)
-        if (typeof GoogleSheets !== 'undefined' && created) {
-            GoogleSheets.queueSave?.({ type: 'upsertReservation', id: created.id, data: created });
+        if (typeof SupabaseSync !== 'undefined' && created) {
+            SupabaseSync.queueSave?.({ type: 'upsertReservation', id: created.id, data: created });
         }
     }
     
@@ -1189,8 +1196,8 @@ function handleDeleteReservation() {
     if (confirm('예약을 삭제하시겠습니까?')) {
         Storage.deleteReservation(reservationId);
         // 서버 반영(자동)
-        if (typeof GoogleSheets !== 'undefined') {
-            GoogleSheets.queueSave?.({ type: 'deleteReservation', id: reservationId });
+        if (typeof SupabaseSync !== 'undefined') {
+            SupabaseSync.queueSave?.({ type: 'deleteReservation', id: reservationId });
         }
         loadReservations();
         renderSchedule();
@@ -1229,8 +1236,8 @@ function handleAddRoomSubmit(e) {
         hideAddRoomModal();
 
         // 서버 반영(자동)
-        if (typeof GoogleSheets !== 'undefined' && newRoom) {
-            GoogleSheets.queueSave?.({ type: 'upsertRoom', id: newRoom.id, data: newRoom });
+        if (typeof SupabaseSync !== 'undefined' && newRoom) {
+            SupabaseSync.queueSave?.({ type: 'upsertRoom', id: newRoom.id, data: newRoom });
         }
     }
 }
@@ -1273,8 +1280,8 @@ function handleEditRoomSubmit(e) {
         hideEditRoomModal();
 
         // 서버 반영(자동)
-        if (typeof GoogleSheets !== 'undefined' && updated) {
-            GoogleSheets.queueSave?.({ type: 'upsertRoom', id: updated.id, data: updated });
+        if (typeof SupabaseSync !== 'undefined' && updated) {
+            SupabaseSync.queueSave?.({ type: 'upsertRoom', id: updated.id, data: updated });
         }
     }
 }

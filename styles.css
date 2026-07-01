@@ -48,16 +48,22 @@
 /* 예약 내용 표시 */
 .reservation-content {
     padding: 4px;
-    font-size: 0.875rem;
+    font-size: 0.9375rem;
 }
 
 .reservation-name {
-    font-weight: 600;
+    font-weight: 700;
 }
 
 .reservation-class {
-    font-size: 0.75rem;
-    opacity: 0.9;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    opacity: 1;
+}
+
+/* 예약된 셀은 좌측 컬러 바로 방 구분을 강화(배경색만으로는 대비가 약해 흐릿하게 보이는 문제 보완) */
+.schedule-cell.status-default {
+    border-left: 4px solid var(--reserved-fg, #111827);
 }
 
 /* 특별실 탭 스타일 */
@@ -65,6 +71,8 @@
     padding: 8px 16px;
     border-radius: 4px;
     cursor: pointer;
+    font-weight: 500;
+    border: 1px solid transparent;
     transition: all 0.2s;
 }
 
@@ -75,20 +83,23 @@
 .room-tab.active {
     background-color: #3b82f6;
     color: white;
+    font-weight: 700;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 
 /* 교시 번호 스타일 */
 .period-number {
-    font-weight: 600;
+    font-weight: 700;
     text-align: center;
 }
 
 /* 교시 시간 표시(작은 글씨) */
 .period-time {
-    font-size: 0.70rem;
-    line-height: 1.1;
-    opacity: 0.75;
-    font-weight: 500;
+    font-size: 0.75rem;
+    line-height: 1.15;
+    opacity: 0.85;
+    font-weight: 600;
+    color: #374151;
     margin-top: 2px;
     white-space: nowrap;
 }
@@ -98,44 +109,13 @@
     position: absolute;
     right: 6px;
     bottom: 4px;
-    /* 너무 작고 흐리다는 피드백 반영: 약간 키우고 조금 더 진하게 */
     font-size: 0.85rem;
     line-height: 1.15;
-    color: #4b5563;
-    opacity: 0.60;
-    font-weight: 600;
+    color: #374151;
+    opacity: 0.75;
+    font-weight: 700;
     white-space: pre-line;
     pointer-events: none;
     text-align: right;
-}
-
-/* 상태 아이콘 스타일 */
-.status-icon {
-    display: inline-block;
-    margin-right: 4px;
-    font-size: 0.875rem;
-}
-
-.status-icon.confirmed::before {
-    content: "●";
-    color: black;
-}
-
-.status-icon.default::before {
-    content: "◆";
-    color: #6b7280;
-}
-
-.status-icon.waiting::before {
-    content: "◎";
-    color: #9ca3af;
-    border: 1px solid #9ca3af;
-    border-radius: 50%;
-    width: 1em;
-    height: 1em;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.75em;
 }
 

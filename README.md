@@ -1,7 +1,9 @@
 # 특별실 예약 관리 웹앱 (사용 가이드)
 
 월~금 × 1~10교시 격자형 시간표에서 **특별실 예약을 생성/수정/삭제**하는 웹앱입니다.  
-프론트는 GitHub Pages 같은 정적 호스팅에서 동작하고, 데이터는 **Google Apps Script Web App + Google Sheet**에 저장/공유됩니다.
+프론트는 GitHub Pages 같은 정적 호스팅에서 동작하고, 데이터는 **Supabase(Postgres)**에 저장/공유됩니다.
+(기존 Google Apps Script + Google Sheet 방식에서 Supabase로 전환했습니다. 예전 방식 코드는
+`apps_script/Code.gs`에 참고용으로 남겨뒀습니다.)
 
 ## 핵심 규칙(실사용 기준)
 
@@ -32,45 +34,38 @@
 - 예약된 칸을 클릭하면 비밀번호를 물어봅니다 → **`8714`** 입력 후 수정/삭제
 
 ### 4) 동기화(서버 저장/불러오기)
-- **서버로 저장**: 내 브라우저의 변경 내용을 서버(시트)에 저장
-- **서버에서 불러오기**: 서버(시트)의 내용을 가져옴
+- **서버로 저장**: 내 브라우저의 변경 내용을 서버(Supabase)에 저장
+- **서버에서 불러오기**: 서버(Supabase)의 내용을 가져옴
+- 위 두 버튼과 별개로, 다른 사람이 예약을 추가/수정하면 **Realtime 구독으로 거의 즉시 화면에 반영**됩니다(구글시트 시절의 20초 폴링보다 훨씬 빠릅니다).
 
 #### 자동 동기화 옵션
-`구글시트 설정`에서 아래 옵션을 켜고/끄며 조절할 수 있습니다.
-- **자동 저장**: 입력 시 자동으로 서버에 저장
-- **자동 불러오기**: 주기적으로 서버에서 최신 데이터를 가져옴(동시 사용자 있을 때 권장)
+`서버 설정` 버튼에서 아래 옵션을 켜고/끄며 조절할 수 있습니다.
+- **서버 연동 활성화**
+- **안전망 폴링**: Realtime이 어떤 이유로 끊겼을 때를 대비한 주기적 재확인(기본 60초)
 
-## 관리자(배포/시트 담당) 설정 방법
+## 관리자(배포 담당) 설정 방법
 
-### 1) Google Sheet 준비
-- 시트 탭: `Rooms`, `Reservations`
-- `Reservations` 헤더 예시:
-  - `id | roomId(또는 roomID) | date | period | name | class | purpose | createdAt(또는 createAt) | updatedAt`
+### 1) Supabase 프로젝트 준비
+- [supabase.com](https://supabase.com)에서 무료 프로젝트 생성
+- 프로젝트의 **SQL Editor**에 `supabase/schema.sql` 내용을 그대로 붙여넣고 실행
+  - `rooms`/`reservations`/`hints` 테이블, 고정 특별실 4개 시드, Realtime 설정까지 한 번에 만들어집니다.
+  - 핵심: `reservations`에 `UNIQUE(room_id, date, period)` 제약이 걸려 있어서, 같은 방/날짜/교시에 예약이 2개 이상 생기는 걸 **DB가 직접 막습니다**(예전 구글시트 버전은 이걸 클라이언트 로직으로만 방어하다 보니 드래그앤드롭 등에서 중복이 생기곤 했습니다).
+- 프로젝트의 **Project URL**과 **Publishable(anon) key**를 확보 (Settings → API)
+  - `service_role` 키는 절대 프론트에 넣지 마세요. publishable/anon 키만 사용합니다.
 
-### 2) Apps Script 배포
-- `apps_script/Code.gs`를 Apps Script 편집기에 붙여넣고 저장
-- **배포 → 배포 관리 → 기존 배포 편집(연필) → 새 버전 배포**
-- 배포된 Web App URL을 확보
+### 2) 기존 구글시트 데이터가 있다면: 1회성 이관
+- 저장소 루트의 `migrate.html`을 열어서(더블클릭 또는 로컬 서버로) Apps Script Web App URL과 Supabase 정보를 입력
+- "1) 구글시트에서 불러오기" → "2) Supabase로 밀어넣기" 순서로 클릭하면 끝
+- 이관이 끝나면 `migrate.html`은 지워도 됩니다.
 
-### 2-1) (추천) 시트가 꼬였을 때 서버에서 자동 정리(Repair)
-시트를 사람이 직접 편집하다 보면 **빈 id / 중복 id / 같은 이름의 특별실이 여러 개** 같은 문제가 쌓일 수 있습니다.  
-이 저장소의 `apps_script/Code.gs`에는 이를 한 번에 정리하는 관리자 기능이 포함되어 있습니다.
-
-- **실행 방법**
-  - 앱에서 `구글시트 설정` → **서버 데이터 정리** 버튼
-  - 관리자 비밀번호로 **`8714`** 입력
-- **무엇을 정리하나**
-  - `Rooms`: 고정 특별실 4개를 canonical id로 강제하고, 중복/빈 id 행을 정리
-  - `Reservations`: `roomId`를 canonical id로 이관하고, 중복/빈 id 행을 정리
-
-> IMPORTANT: Apps Script를 수정했으면 **배포 관리에서 ‘새 버전 배포’**를 꼭 해야 실제 서버에 반영됩니다.
-
-### 3) GitHub Pages(프론트)에서 서버 URL “고정”하기
+### 3) GitHub Pages(프론트)에서 서버 정보 “고정”하기
 이 저장소의 `index.html`에 아래 값이 들어있어야 합니다.
-- `window.APP_DEFAULT_WEBAPP_URL = 'https://script.google.com/macros/s/.../exec'`
-- `window.APP_LOCK_SERVER_URL = true`
-
-> URL을 고정해두면, 다른 사용자는 “구글시트 설정”을 따로 하지 않아도 됩니다.
+```html
+window.APP_DEFAULT_SUPABASE_URL = 'https://xxxx.supabase.co';
+window.APP_DEFAULT_SUPABASE_KEY = 'sb_publishable_...';
+window.APP_LOCK_SERVER_URL = true;
+```
+> 값을 고정해두면, 다른 사용자는 “서버 설정”을 따로 하지 않아도 됩니다.
 
 ## 문제 해결(가장 자주 묻는 것)
 
@@ -81,30 +76,33 @@
 Chrome → `F12` → **Application** → **Local Storage** → 해당 사이트 → 아래 키 삭제:
 - `specialRooms`
 - `specialReservations`
-- `googleSheetsConfig`
-- `serverSyncVersion`
+- `supabaseConfig`
+- `roomHintById`
+- `roomBaseCellHints`
 
 삭제 후 새로고침하면 초기 상태로 돌아옵니다(필요하면 서버에서 불러오기로 복구).
 
-또는 앱에서 `구글시트 설정` → **이 PC 데이터 초기화** 버튼을 눌러도 됩니다(개발자도구 없이 가능).
+또는 앱에서 `서버 설정` → **이 PC 데이터 초기화** 버튼을 눌러도 됩니다(개발자도구 없이 가능).
 
-### Q2. 서버에서 불러오기하면 특별실이 늘어나요(중복 생성)
-과거 시트에 “같은 이름, 다른 id”가 여러 개 있을 때 발생합니다.  
-현재 버전은 고정 특별실 4개를 **canonical id로 통합**하고, 예약의 `roomId`도 같이 정리해서 중복 생성을 방지합니다.
+### Q2. 같은 방/날짜/교시에 예약이 중복으로 생기나요?
+`reservations` 테이블의 `UNIQUE(room_id, date, period)` 제약 때문에 DB 레벨에서 원천 차단됩니다. 두 사람이 거의 동시에 같은 슬롯을 예약 시도하면, 나중 요청은 서버에서 거부되고 클라이언트가 자동으로 서버 최신 상태를 다시 받아와 화면을 바로잡습니다.
 
 ## 파일 구조
 
 ```
 특별실 예약관리/
-├── index.html          # 메인 HTML(서버 URL 고정 설정 포함)
+├── index.html          # 메인 HTML(서버 접속 정보 고정 설정 포함)
 ├── styles.css          # 스타일
+├── migrate.html         # (1회성) 구글시트 → Supabase 데이터 이관 도구
 ├── js/
-│   ├── app.js          # UI/이벤트/병합 로직
-│   ├── storage.js      # LocalStorage + 정규화/고정방 통합
-│   ├── googleSheets.js # Apps Script Web App 연동(자동 저장/불러오기)
-│   └── utils.js        # 날짜/주간 유틸
+│   ├── app.js           # UI/이벤트/병합 로직
+│   ├── storage.js       # LocalStorage + 정규화/고정방 통합
+│   ├── supabaseSync.js  # Supabase 연동(Realtime 구독 + 자동 저장/불러오기)
+│   └── utils.js         # 날짜/주간 유틸
+├── supabase/
+│   └── schema.sql       # Supabase 테이블/제약/RLS/Realtime 설정
 └── apps_script/
-   └── Code.gs          # Apps Script 서버 코드
+   └── Code.gs           # (레거시) 예전 Apps Script 서버 코드, 참고/백업용
 ```
 
 ## 주의사항(보안)
