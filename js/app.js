@@ -8,11 +8,14 @@ const AppState = {
     currentWeek: new Date(), // 현재 선택된 주의 기준 날짜
     reservations: [],
     rooms: [],
-    draggedRoom: null // 드래그 중인 특별실
+    draggedRoom: null, // 드래그 중인 특별실
+    draggedReservation: null // 드래그 중인 예약(같은 방 안에서 시간 이동용)
 };
 
 // 공통 비밀번호 (특별실 삭제 / 예약 수정·삭제)
+// 힌트: 학교 전화번호 뒷 4자리
 const COMMON_PASSWORD = '8714';
+const COMMON_PASSWORD_HINT = '학교 전화번호 뒷 4자리';
 
 /**
  * 시간표 슬롯 정의
@@ -375,7 +378,7 @@ let authorizedReservationId = null;
  * @returns {boolean}
  */
 function requireCommonPassword(actionLabel) {
-    const input = prompt(`${actionLabel}하려면 비밀번호(4자리)를 입력하세요:`);
+    const input = prompt(`${actionLabel}하려면 비밀번호(4자리)를 입력하세요:\n(힌트: ${COMMON_PASSWORD_HINT})`);
     if (input === null) return false; // 취소
     if (input !== COMMON_PASSWORD) {
         alert('비밀번호가 올바르지 않습니다.');
@@ -748,7 +751,7 @@ function requestDeleteRoom(room) {
         alert('이 특별실은 고정 특별실이라 삭제할 수 없습니다.');
         return;
     }
-    const password = prompt(`${room.name}을(를) 삭제하려면 비밀번호(4자리)를 입력하세요:`);
+    const password = prompt(`${room.name}을(를) 삭제하려면 비밀번호(4자리)를 입력하세요:\n(힌트: ${COMMON_PASSWORD_HINT})`);
     if (password === COMMON_PASSWORD) {
         if (confirm(`${room.name}을(를) 삭제하시겠습니까? 모든 예약도 함께 삭제됩니다.`)) {
             deleteRoom(room.id);
@@ -1074,18 +1077,48 @@ function renderSchedule() {
             // 드래그앤드롭 이벤트
             cell.addEventListener('dragover', (e) => {
                 e.preventDefault();
-                if (AppState.draggedRoom) {
+                if (AppState.draggedRoom || AppState.draggedReservation) {
                     cell.classList.add('drag-over');
                 }
             });
-            
+
             cell.addEventListener('dragleave', () => {
                 cell.classList.remove('drag-over');
             });
-            
+
             cell.addEventListener('drop', (e) => {
                 e.preventDefault();
                 cell.classList.remove('drag-over');
+
+                // 예약 칸을 끌어다 놓은 경우: 같은 방 안에서 날짜/교시 이동
+                if (AppState.draggedReservation) {
+                    const dragged = AppState.draggedReservation;
+                    AppState.draggedReservation = null;
+
+                    const samePlace = dragged.roomId === AppState.currentRoomId &&
+                        dragged.date === dateStr &&
+                        normalizePeriodKey_(dragged.period) === normalizePeriodKey_(slotId);
+                    if (samePlace) return; // 원래 자리에 놓으면 아무 것도 안 함
+
+                    const existing = getReservationForSlot_(AppState.currentRoomId, dateStr, slotId);
+                    if (existing && existing.id !== dragged.id) {
+                        alert('이미 예약이 있는 시간입니다.');
+                        return;
+                    }
+                    if (!requireCommonPassword('예약을 이동')) return;
+
+                    const updated = Storage.updateReservation(dragged.id, {
+                        roomId: AppState.currentRoomId,
+                        date: dateStr,
+                        period: slotId
+                    });
+                    if (typeof SupabaseSync !== 'undefined' && updated) {
+                        SupabaseSync.queueSave?.({ type: 'upsertReservation', id: updated.id, data: updated });
+                    }
+                    loadReservations();
+                    renderSchedule();
+                    return;
+                }
 
                 if (AppState.draggedRoom) {
                     const targetRoomId = AppState.draggedRoom.id;
@@ -1102,10 +1135,11 @@ function renderSchedule() {
                     }
                 }
             });
-            
+
             if (reservation) {
                 // 예약이 있는 경우
                 cell.classList.add('reserved', 'status-default');
+                cell.draggable = true;
                 cell.innerHTML = `
                     <div class="reservation-content">
                         <div class="flex items-center gap-1">
@@ -1116,6 +1150,15 @@ function renderSchedule() {
                     </div>
                     ${baseHintHtml}
                 `;
+                cell.addEventListener('dragstart', (e) => {
+                    AppState.draggedReservation = reservation;
+                    e.dataTransfer.effectAllowed = 'move';
+                    cell.style.opacity = '0.5';
+                });
+                cell.addEventListener('dragend', () => {
+                    cell.style.opacity = '1';
+                    AppState.draggedReservation = null;
+                });
                 cell.addEventListener('click', () => {
                     // 수정/삭제는 공통 비밀번호 필요
                     if (!requireCommonPassword('예약을 수정/삭제')) return;
